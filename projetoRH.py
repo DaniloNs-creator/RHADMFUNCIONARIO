@@ -1,1615 +1,918 @@
-# app.py
 import streamlit as st
-import sqlite3
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-import plotly.graph_objects as go
+import sqlite3
+import datetime
 import plotly.express as px
-from plotly.subplots import make_subplots
-import json
-from pathlib import Path
-import calendar
-from dataclasses import dataclass
-from typing import List, Dict, Optional
-import hashlib
+from streamlit_option_menu import option_menu
+import base64
+from io import BytesIO
 
-# Configuração da página
+# ---------------- PAGE CONFIG ----------------
 st.set_page_config(
-    page_title="PRO CYCLIST AI | Coach Premium",
-    page_icon="🚴‍♂️",
+    page_title="XCM & Duatlo Coach Pro",
+    page_icon="🚴",
     layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
-        'Get Help': 'https://www.seuapp.com/help',
-        'Report a bug': "https://www.seuapp.com/bug",
-        'About': "# Pro Cyclist AI Coach v2.0\nTreinamento de Elite"
-    }
+    initial_sidebar_state="expanded"
 )
 
-# CSS Customizado Profissional
-def load_css():
-    st.markdown("""
-    <style>
-    /* Design System */
-    :root {
-        --primary: #FF4B4B;
-        --primary-dark: #CC0000;
-        --secondary: #0068C9;
-        --success: #00C853;
-        --warning: #FFD700;
-        --danger: #FF1744;
-        --dark: #0E1117;
-        --darker: #000000;
-        --light: #FAFAFA;
-        --gray: #808495;
-        --card-bg: #1E1E1E;
-        --border: #2E2E2E;
+# ---------------- CUSTOM CSS ----------------
+st.markdown("""
+<style>
+    /* MAIN THEME */
+    .main {
+        background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+        color: #f0f0f0;
     }
-    
-    /* Global Styles */
     .stApp {
-        background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
+        background: #0f0f1a;
     }
-    
-    /* Hero Section */
-    .hero-section {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        padding: 3rem;
+    /* CARDS */
+    .card {
+        background: rgba(30, 30, 50, 0.8);
+        backdrop-filter: blur(10px);
         border-radius: 20px;
-        margin-bottom: 2rem;
-        color: white;
-        box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        padding: 25px;
+        margin: 15px 0;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+        transition: all 0.3s ease;
     }
-    
-    .hero-title {
-        font-size: 3.5rem;
-        font-weight: 800;
-        margin: 0;
-        text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
-    }
-    
-    .hero-subtitle {
-        font-size: 1.5rem;
-        opacity: 0.95;
-        margin-top: 1rem;
-    }
-    
-    /* Metric Cards */
-    .metric-card {
-        background: linear-gradient(145deg, #1e1e2f 0%, #2a2a3f 100%);
-        border-radius: 20px;
-        padding: 2rem;
-        border: 1px solid #3a3a5f;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
-        cursor: pointer;
-    }
-    
-    .metric-card:hover {
+    .card:hover {
         transform: translateY(-5px);
-        box-shadow: 0 15px 40px rgba(102, 126, 234, 0.4);
-        border-color: #667eea;
+        border-color: #00d4ff;
+        box-shadow: 0 12px 40px rgba(0,212,255,0.15);
     }
-    
-    .metric-value {
-        font-size: 2.5rem;
+    .metric-card {
+        background: rgba(0, 212, 255, 0.05);
+        border-left: 4px solid #00d4ff;
+        padding: 15px 20px;
+        border-radius: 10px;
+        margin: 10px 0;
+    }
+    .title-gradient {
+        font-size: 2.8rem;
         font-weight: 800;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(135deg, #00d4ff, #7b2ffc);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
-        margin: 0.5rem 0;
+        background-clip: text;
+        letter-spacing: -1px;
     }
-    
-    .metric-label {
-        font-size: 0.9rem;
-        color: #a0a0b0;
-        text-transform: uppercase;
-        letter-spacing: 2px;
+    .section-title {
+        font-size: 1.8rem;
+        font-weight: 700;
+        color: #00d4ff;
+        border-bottom: 2px solid rgba(0,212,255,0.2);
+        padding-bottom: 8px;
+        margin-top: 30px;
     }
-    
-    .metric-delta {
-        font-size: 0.9rem;
-        color: #00C853;
+    .highlight {
+        color: #ff6b6b;
         font-weight: 600;
     }
-    
-    /* Progress Bar Custom */
-    .custom-progress {
-        background: #1e1e2f;
-        border-radius: 20px;
-        padding: 1.5rem;
-        margin: 1.5rem 0;
-        border: 1px solid #3a3a5f;
+    /* SIDEBAR */
+    .css-1d391kg {
+        background: rgba(15, 15, 26, 0.95);
+        border-right: 1px solid rgba(255,255,255,0.05);
     }
-    
-    .progress-fill {
-        height: 30px;
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-        border-radius: 15px;
-        transition: width 0.6s ease;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .progress-fill::after {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
-        animation: shimmer 2s infinite;
-    }
-    
-    @keyframes shimmer {
-        0% { transform: translateX(-100%); }
-        100% { transform: translateX(100%); }
-    }
-    
-    /* Food Cards */
-    .food-card {
-        background: linear-gradient(145deg, #1e1e2f 0%, #252540 100%);
-        border-radius: 15px;
-        padding: 1.5rem;
-        border: 1px solid #3a3a5f;
-        margin: 1rem 0;
-        transition: all 0.3s ease;
-    }
-    
-    .food-card:hover {
-        border-color: #667eea;
-        transform: scale(1.02);
-    }
-    
-    /* Workout Cards */
-    .workout-card {
-        background: linear-gradient(145deg, #1e1e2f 0%, #252540 100%);
-        border-radius: 15px;
-        padding: 1.5rem;
-        border-left: 5px solid #667eea;
-        margin: 1rem 0;
-        transition: all 0.3s ease;
-    }
-    
-    .workout-card.musculacao {
-        border-left-color: #FF4B4B;
-    }
-    
-    .workout-card.ciclismo {
-        border-left-color: #0068C9;
-    }
-    
-    .workout-card.corrida {
-        border-left-color: #00C853;
-    }
-    
-    /* Zone Badges */
-    .zone-badge {
-        display: inline-block;
-        padding: 0.5rem 1rem;
-        border-radius: 20px;
-        font-weight: 700;
-        font-size: 0.85rem;
-        margin: 0.2rem;
-    }
-    
-    .zone-z1 { background: #00C853; color: white; }
-    .zone-z2 { background: #64DD17; color: black; }
-    .zone-z3 { background: #FFD700; color: black; }
-    .zone-z4 { background: #FF9100; color: white; }
-    .zone-z5 { background: #FF1744; color: white; }
-    
-    /* Animations */
-    @keyframes fadeInUp {
-        from {
-            opacity: 0;
-            transform: translateY(20px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
-    
-    .animate-fade-in {
-        animation: fadeInUp 0.6s ease-out;
-    }
-    
-    /* Timeline */
-    .timeline {
-        position: relative;
-        padding: 2rem 0;
-    }
-    
-    .timeline::before {
-        content: '';
-        position: absolute;
-        left: 50%;
-        top: 0;
-        bottom: 0;
-        width: 2px;
-        background: linear-gradient(to bottom, #667eea, #764ba2);
-        transform: translateX(-50%);
-    }
-    
-    .timeline-item {
-        margin: 2rem 0;
-        padding: 1.5rem;
-        background: linear-gradient(145deg, #1e1e2f 0%, #252540 100%);
-        border-radius: 15px;
-        border: 1px solid #3a3a5f;
-        position: relative;
-    }
-    
-    .timeline-item::before {
-        content: '';
-        position: absolute;
-        width: 20px;
-        height: 20px;
-        background: #667eea;
-        border-radius: 50%;
-        left: -10px;
-        top: 50%;
-        transform: translateY(-50%);
-    }
-    
-    /* Buttons */
-    .btn-primary {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 1rem 2rem;
+    .stSelectbox, .stTextInput, .stNumberInput {
+        background: rgba(255,255,255,0.05);
         border-radius: 10px;
+        border: 1px solid rgba(255,255,255,0.1);
+        color: white;
+    }
+    /* BUTTONS */
+    .stButton > button {
+        background: linear-gradient(135deg, #00d4ff, #7b2ffc);
+        color: white;
         border: none;
-        font-weight: 700;
-        cursor: pointer;
+        border-radius: 50px;
+        padding: 12px 30px;
+        font-weight: 600;
         transition: all 0.3s ease;
-        text-transform: uppercase;
-        letter-spacing: 1px;
+        box-shadow: 0 4px 15px rgba(0,212,255,0.3);
+        width: 100%;
     }
-    
-    .btn-primary:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 10px 30px rgba(102, 126, 234, 0.5);
+    .stButton > button:hover {
+        transform: scale(1.02);
+        box-shadow: 0 8px 25px rgba(0,212,255,0.5);
     }
-    
-    /* Responsive Grid */
-    .responsive-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-        gap: 1.5rem;
-        padding: 1rem 0;
+    /* TABLES */
+    .dataframe {
+        background: rgba(30, 30, 50, 0.6);
+        border-radius: 15px;
+        padding: 10px;
+        border: 1px solid rgba(255,255,255,0.05);
     }
-    
-    /* Glassmorphism */
-    .glass-card {
-        background: rgba(30, 30, 47, 0.7);
-        backdrop-filter: blur(10px);
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 20px;
-        padding: 2rem;
+    /* PROGRESS BARS */
+    .stProgress > div > div {
+        background: linear-gradient(90deg, #00d4ff, #7b2ffc);
     }
-    
-    /* Scrollbar */
+    /* SCROLLBAR */
     ::-webkit-scrollbar {
-        width: 10px;
+        width: 6px;
+        height: 6px;
     }
-    
     ::-webkit-scrollbar-track {
-        background: #0a0a0a;
+        background: rgba(255,255,255,0.05);
     }
-    
     ::-webkit-scrollbar-thumb {
-        background: linear-gradient(135deg, #667eea, #764ba2);
-        border-radius: 5px;
+        background: #00d4ff;
+        border-radius: 10px;
     }
-    
-    ::-webkit-scrollbar-thumb:hover {
-        background: linear-gradient(135deg, #764ba2, #667eea);
+    /* RESPONSIVE */
+    @media (max-width: 768px) {
+        .title-gradient {
+            font-size: 2rem;
+        }
+        .card {
+            padding: 15px;
+        }
     }
-    </style>
-    """, unsafe_allow_html=True)
+</style>
+""", unsafe_allow_html=True)
 
-# Classe de Gerenciamento de Dados
-@dataclass
-class AthleteProfile:
-    name: str = "Atleta Pro"
-    age: int = 29
-    height: float = 1.90
-    current_weight: float = 110.0
-    target_weight: float = 78.0
-    fcm: int = 178
-    target_date: str = "2026-12-31"
+# ---------------- DATABASE ----------------
+def init_db():
+    conn = sqlite3.connect('coach_data.db')
+    c = conn.cursor()
+    # Workouts table
+    c.execute('''CREATE TABLE IF NOT EXISTS workouts
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  date TEXT,
+                  type TEXT,
+                  duration_minutes REAL,
+                  hr_avg INTEGER,
+                  cadence_avg INTEGER,
+                  distance_km REAL,
+                  calories_burned INTEGER,
+                  notes TEXT)''')
+    # Nutrition table
+    c.execute('''CREATE TABLE IF NOT EXISTS nutrition
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  date TEXT,
+                  meal_type TEXT,
+                  food_name TEXT,
+                  quantity REAL,
+                  unit TEXT,
+                  calories REAL,
+                  protein REAL,
+                  carbs REAL,
+                  fat REAL)''')
+    # Body metrics table
+    c.execute('''CREATE TABLE IF NOT EXISTS body_metrics
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  date TEXT,
+                  weight_kg REAL,
+                  body_fat REAL,
+                  muscle_mass REAL,
+                  notes TEXT)''')
+    # Food database
+    c.execute('''CREATE TABLE IF NOT EXISTS food_db
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  food_name TEXT UNIQUE,
+                  calories_per_100g REAL,
+                  protein_per_100g REAL,
+                  carbs_per_100g REAL,
+                  fat_per_100g REAL)''')
     
-class DatabaseManager:
-    def __init__(self):
-        self.conn = sqlite3.connect('pro_cyclist_ai.db', check_same_thread=False)
-        self.create_tables()
-        self.initialize_food_database()
-        
-    def create_tables(self):
-        c = self.conn.cursor()
-        
-        c.executescript('''
-            CREATE TABLE IF NOT EXISTS athlete_profile (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                age INTEGER,
-                height REAL,
-                start_weight REAL,
-                target_weight REAL,
-                fcm INTEGER,
-                start_date TEXT,
-                target_date TEXT
-            );
-            
-            CREATE TABLE IF NOT EXISTS workouts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                type TEXT NOT NULL,
-                subtype TEXT,
-                duration_min INTEGER,
-                distance_km REAL,
-                avg_hr INTEGER,
-                max_hr INTEGER,
-                avg_cadence INTEGER,
-                zone TEXT,
-                rpe INTEGER,
-                calories_burned INTEGER,
-                feeling TEXT,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE TABLE IF NOT EXISTS meals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                meal_type TEXT NOT NULL,
-                food_name TEXT NOT NULL,
-                portion_g REAL,
-                calories REAL,
-                protein_g REAL,
-                carbs_g REAL,
-                fat_g REAL,
-                fiber_g REAL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE TABLE IF NOT EXISTS weight_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT NOT NULL,
-                weight_kg REAL,
-                body_fat_pct REAL,
-                notes TEXT
-            );
-            
-            CREATE TABLE IF NOT EXISTS food_database (
-                id INTEGER PRIMARY KEY,
-                name TEXT NOT NULL UNIQUE,
-                category TEXT,
-                calories_per_100g REAL,
-                protein_per_100g REAL,
-                carbs_per_100g REAL,
-                fat_per_100g REAL,
-                fiber_per_100g REAL
-            );
-            
-            CREATE TABLE IF NOT EXISTS weekly_plan (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                week_number INTEGER,
-                day_of_week TEXT,
-                workout_type TEXT,
-                description TEXT,
-                duration_planned INTEGER,
-                target_zone TEXT,
-                target_cadence TEXT,
-                rpe_target INTEGER
-            );
-        ''')
-        
-        self.conn.commit()
-    
-    def initialize_food_database(self):
-        c = self.conn.cursor()
-        
-        # Verifica se já existem dados
-        c.execute("SELECT COUNT(*) FROM food_database")
-        if c.fetchone()[0] > 0:
-            return
-            
-        # Banco de dados completo de alimentos
-        foods = [
-            # Proteínas
-            ("Peito de Frango Grelhado", "Proteínas", 165, 31, 0, 3.6, 0),
-            ("Salmão", "Proteínas", 208, 20, 0, 13, 0),
-            ("Atum em Água", "Proteínas", 116, 26, 0, 1, 0),
-            ("Ovo Inteiro", "Proteínas", 155, 13, 1.1, 11, 0),
-            ("Clara de Ovo", "Proteínas", 52, 11, 0.7, 0.2, 0),
-            ("Carne Bovina Magra", "Proteínas", 250, 26, 0, 15, 0),
-            ("Peito de Peru", "Proteínas", 135, 30, 0, 1, 0),
-            ("Tilápia", "Proteínas", 96, 20, 0, 1.7, 0),
-            ("Whey Protein", "Suplementos", 380, 80, 10, 5, 0),
-            ("Caseína", "Suplementos", 360, 80, 5, 2, 0),
-            ("BCAA", "Suplementos", 0, 0, 0, 0, 0),
-            ("Creatina", "Suplementos", 0, 0, 0, 0, 0),
-            
-            # Carboidratos
-            ("Arroz Integral Cozido", "Carboidratos", 123, 2.6, 25.6, 1, 1.8),
-            ("Batata Doce Cozida", "Carboidratos", 86, 1.6, 20.1, 0.1, 3),
-            ("Aveia em Flocos", "Carboidratos", 389, 16.9, 66.3, 6.9, 10.6),
-            ("Pão Integral", "Carboidratos", 247, 13, 41, 3.4, 7),
-            ("Macarrão Integral", "Carboidratos", 124, 5.3, 26.5, 0.5, 4.5),
-            ("Quinoa Cozida", "Carboidratos", 120, 4.4, 21.3, 1.9, 2.8),
-            ("Banana", "Frutas", 89, 1.1, 22.8, 0.3, 2.6),
-            ("Maçã", "Frutas", 52, 0.3, 13.8, 0.2, 2.4),
-            ("Mamão", "Frutas", 43, 0.5, 10.8, 0.3, 1.7),
-            ("Morango", "Frutas", 32, 0.7, 7.7, 0.3, 2),
-            
-            # Gorduras Saudáveis
-            ("Abacate", "Gorduras", 160, 2, 8.5, 14.7, 6.7),
-            ("Azeite de Oliva", "Gorduras", 884, 0, 0, 100, 0),
-            ("Castanha do Pará", "Gorduras", 656, 14.3, 12.3, 66.4, 7.5),
-            ("Amêndoas", "Gorduras", 579, 21.2, 21.6, 49.9, 12.5),
-            ("Pasta de Amendoim", "Gorduras", 588, 25, 20, 50, 6),
-            ("Semente de Chia", "Gorduras", 486, 16.5, 42.1, 30.7, 34.4),
-            ("Linhaça", "Gorduras", 534, 18.3, 28.9, 42.2, 27.3),
-            
-            # Vegetais
-            ("Brócolis Cozido", "Vegetais", 35, 2.4, 7.2, 0.4, 3.3),
-            ("Espinafre", "Vegetais", 23, 2.9, 3.6, 0.4, 2.2),
-            ("Alface", "Vegetais", 15, 1.4, 2.9, 0.2, 1.3),
-            ("Tomate", "Vegetais", 18, 0.9, 3.9, 0.2, 1.2),
-            ("Cenoura Crua", "Vegetais", 41, 0.9, 9.6, 0.2, 2.8),
-            ("Couve", "Vegetais", 49, 4.3, 8.8, 0.9, 3.6),
-            
-            # Laticínios
-            ("Iogurte Grego Natural", "Laticínios", 97, 10, 3.6, 5, 0),
-            ("Leite Desnatado", "Laticínios", 34, 3.4, 5, 0.1, 0),
-            ("Queijo Cottage", "Laticínios", 98, 11.1, 3.4, 4.3, 0),
-            ("Queijo Mussarela Light", "Laticínios", 250, 25, 3, 15, 0),
-            
-            # Bebidas
-            ("Água de Coco", "Bebidas", 19, 0.7, 4.2, 0, 0),
-            ("Suco de Laranja Natural", "Bebidas", 45, 0.7, 10.4, 0.2, 0.2),
-            ("Café Preto", "Bebidas", 2, 0.1, 0, 0, 0),
-            ("Chá Verde", "Bebidas", 1, 0.1, 0.2, 0, 0),
+    # Insert default foods if empty
+    c.execute("SELECT COUNT(*) FROM food_db")
+    if c.fetchone()[0] == 0:
+        default_foods = [
+            ('Peito de Frango', 165, 31, 0, 3.6),
+            ('Arroz Branco', 130, 2.7, 28, 0.3),
+            ('Batata Doce', 86, 1.6, 20, 0.1),
+            ('Ovo', 155, 13, 1.1, 11),
+            ('Aveia', 389, 16.9, 66, 6.9),
+            ('Banana', 89, 1.1, 23, 0.3),
+            ('Whey Protein', 350, 80, 5, 3),
+            ('Salada Mista', 15, 1.5, 3, 0.1),
+            ('Azeite de Oliva', 884, 0, 0, 100),
+            ('Pão Integral', 265, 9, 45, 3.5),
+            ('Queijo Branco', 98, 21, 2, 1.5),
+            ('Iogurte Grego', 59, 10, 3.5, 0.2),
         ]
-        
-        c.executemany('''
-            INSERT OR IGNORE INTO food_database 
-            (name, category, calories_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, fiber_per_100g)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', foods)
-        
-        self.conn.commit()
-
-# Calculadora de Nutrição
-class NutritionCalculator:
-    @staticmethod
-    def calculate_bmr(weight: float, height: float, age: int, gender: str = "male") -> float:
-        """Harris-Benedict Equation"""
-        if gender == "male":
-            return 88.362 + (13.397 * weight) + (4.799 * height * 100) - (5.677 * age)
-        else:
-            return 447.593 + (9.247 * weight) + (3.098 * height * 100) - (4.330 * age)
+        for food in default_foods:
+            c.execute("INSERT OR IGNORE INTO food_db VALUES (NULL, ?, ?, ?, ?, ?)", food)
     
-    @staticmethod
-    def calculate_tdee(bmr: float, activity_level: str = "very_active") -> float:
-        """Total Daily Energy Expenditure"""
-        multipliers = {
-            "sedentary": 1.2,
-            "light": 1.375,
-            "moderate": 1.55,
-            "active": 1.725,
-            "very_active": 1.9
-        }
-        return bmr * multipliers.get(activity_level, 1.725)
-    
-    @staticmethod
-    def calculate_macros(weight: float, target_weight: float, months_to_goal: int) -> Dict:
-        """Calculate optimal macros for weight loss while maintaining performance"""
-        
-        bmr = NutritionCalculator.calculate_bmr(weight, 1.90, 29)
-        tdee = NutritionCalculator.calculate_tdee(bmr)
-        
-        # Déficit progressivo baseado no tempo até a meta
-        weight_to_lose = weight - target_weight
-        weeks = months_to_goal * 4.33
-        deficit_per_week = (weight_to_lose * 7700) / weeks  # 7700 kcal = 1kg gordura
-        
-        # Limitar déficit diário para preservar performance
-        daily_deficit = min(deficit_per_week / 7, 750)
-        
-        # Calorias alvo
-        target_calories = tdee - daily_deficit
-        
-        # Macros para performance
-        protein_g = weight * 2.0  # 2g/kg para preservação muscular
-        fat_g = weight * 0.8  # 0.8g/kg para saúde hormonal
-        carbs_g = (target_calories - (protein_g * 4) - (fat_g * 9)) / 4
-        
-        return {
-            "bmr": round(bmr),
-            "tdee": round(tdee),
-            "target_calories": round(target_calories),
-            "deficit": round(daily_deficit),
-            "protein_g": round(protein_g),
-            "carbs_g": round(carbs_g),
-            "fat_g": round(fat_g),
-            "protein_pct": round(protein_g * 4 / target_calories * 100),
-            "carbs_pct": round(carbs_g * 4 / target_calories * 100),
-            "fat_pct": round(fat_g * 9 / target_calories * 100),
-            "weekly_loss_kg": round(deficit_per_week / 7700, 1)
-        }
+    conn.commit()
+    conn.close()
 
-# Gerador de Planos de Treino
-class WorkoutPlanner:
-    @staticmethod
-    def calculate_zones(fcm: int) -> Dict:
-        return {
-            "Z1": {"name": "Recuperação", "min": 0, "max": int(fcm * 0.65), "color": "#00C853"},
-            "Z2": {"name": "Endurance", "min": int(fcm * 0.66), "max": int(fcm * 0.75), "color": "#64DD17"},
-            "Z3": {"name": "Tempo", "min": int(fcm * 0.76), "max": int(fcm * 0.85), "color": "#FFD700"},
-            "Z4": {"name": "Limiar", "min": int(fcm * 0.86), "max": int(fcm * 0.92), "color": "#FF9100"},
-            "Z5": {"name": "VO2 Max", "min": int(fcm * 0.93), "max": fcm, "color": "#FF1744"}
-        }
-    
-    @staticmethod
-    def generate_weekly_plan(week: int, total_weeks: int = 26) -> Dict:
-        """Gera plano semanal progressivo baseado na semana atual"""
-        
-        # Progressão de volume baseada na semana
-        progress = min(week / total_weeks, 1.0)
-        
-        # Volume base (horas)
-        base_volume = 8 + (progress * 7)  # 8h -> 15h
-        
-        weekly_plan = {
-            "Monday": {
-                "day": "Segunda-feira",
-                "workouts": [
-                    {
-                        "type": "Musculação",
-                        "focus": "Peito + Tríceps + Core",
-                        "duration": 60,
-                        "exercises": [
-                            "Supino Reto: 4x10 (80% RM)",
-                            "Crucifixo Inclinado: 3x12",
-                            "Tríceps Corda: 4x12",
-                            "Paralelas: 3x falha",
-                            "Prancha: 4x60s",
-                            "Abdominal Roda: 3x15"
-                        ]
-                    },
-                    {
-                        "type": "Ciclismo MTB",
-                        "focus": "Endurance Z2",
-                        "duration": 90,
-                        "details": {
-                            "warmup": "15min Z1 (90-100 rpm)",
-                            "main": "60min Z2 (116-133 bpm, 85-95 rpm)",
-                            "cooldown": "15min Z1 (90-100 rpm)"
-                        }
-                    }
-                ]
-            },
-            "Tuesday": {
-                "day": "Terça-feira",
-                "workouts": [
-                    {
-                        "type": "Musculação",
-                        "focus": "Costas + Bíceps",
-                        "duration": 60,
-                        "exercises": [
-                            "Barra Fixa: 4x8-10",
-                            "Remada Curvada: 4x10",
-                            "Puxada Frente: 3x12",
-                            "Remada Unilateral: 3x12",
-                            "Rosca Direta: 3x12",
-                            "Rosca Martelo: 3x12"
-                        ]
-                    },
-                    {
-                        "type": "Corrida",
-                        "focus": "Técnica + Endurance Z2",
-                        "duration": 45,
-                        "details": {
-                            "warmup": "10min Z1",
-                            "main": "25min Z2 (116-133 bpm)",
-                            "technique": "10min educativos (skipping, hopping)"
-                        }
-                    }
-                ]
-            },
-            "Wednesday": {
-                "day": "Quarta-feira",
-                "workouts": [
-                    {
-                        "type": "Musculação",
-                        "focus": "Pernas + Core",
-                        "duration": 60,
-                        "exercises": [
-                            "Agachamento Livre: 5x8 (85% RM)",
-                            "Leg Press: 4x12",
-                            "Stiff: 4x10",
-                            "Cadeira Extensora: 3x15",
-                            "Panturrilha: 4x20",
-                            "Prancha Lateral: 3x45s cada"
-                        ]
-                    },
-                    {
-                        "type": "Ciclismo MTB",
-                        "focus": "Intervalado Z3/Z4",
-                        "duration": 90,
-                        "details": {
-                            "warmup": "20min Z1-Z2",
-                            "intervals": "5x (5min Z4 152-163 bpm + 3min Z2)",
-                            "cooldown": "15min Z1",
-                            "cadence": "80-95 rpm nos intervalos"
-                        }
-                    }
-                ]
-            },
-            "Thursday": {
-                "day": "Quinta-feira",
-                "workouts": [
-                    {
-                        "type": "Musculação",
-                        "focus": "Ombros + Abdômen",
-                        "duration": 60,
-                        "exercises": [
-                            "Desenvolvimento Halteres: 4x10",
-                            "Elevação Lateral: 4x15",
-                            "Elevação Frontal: 3x12",
-                            "Facepull: 3x15",
-                            "Abdominal Infra: 4x20",
-                            "Prancha Spiderman: 3x12 cada"
-                        ]
-                    },
-                    {
-                        "type": "Corrida",
-                        "focus": "Fartlek Z1-Z3",
-                        "duration": 45,
-                        "details": {
-                            "warmup": "10min Z1",
-                            "fartlek": "8x (1min Z3 + 2min Z1)",
-                            "cooldown": "10min Z1"
-                        }
-                    }
-                ]
-            },
-            "Friday": {
-                "day": "Sexta-feira",
-                "workouts": [
-                    {
-                        "type": "Musculação",
-                        "focus": "Full Body Power",
-                        "duration": 60,
-                        "exercises": [
-                            "Levantamento Terra: 5x5 (85% RM)",
-                            "Supino Inclinado: 4x8",
-                            "Agachamento Frontal: 4x8",
-                            "Remada Curvada: 4x8",
-                            "Clean & Press: 3x6"
-                        ]
-                    },
-                    {
-                        "type": "Ciclismo MTB",
-                        "focus": "Recuperação Ativa Z1",
-                        "duration": 60,
-                        "details": {
-                            "zone": "Z1 (<116 bpm)",
-                            "cadence": "90-100 rpm",
-                            "terrain": "Plano, sem subidas"
-                        }
-                    }
-                ]
-            },
-            "Saturday": {
-                "day": "Sábado",
-                "workouts": [
-                    {
-                        "type": "Musculação",
-                        "focus": "Potência + Funcional",
-                        "duration": 60,
-                        "exercises": [
-                            "Kettlebell Swing: 5x20",
-                            "Box Jump: 4x8",
-                            "Burpees: 4x12",
-                            "Battle Rope: 4x30s",
-                            "Wall Ball: 3x15"
-                        ]
-                    },
-                    {
-                        "type": "MTB Longo",
-                        "focus": "Endurance Longo Z1-Z2",
-                        "duration": 180 + int(progress * 60),  # 3-4h progressivo
-                        "details": {
-                            "warmup": "30min Z1",
-                            "main": f"{150 + int(progress * 60)}min Z2 (116-133 bpm)",
-                            "cooldown": "30min Z1",
-                            "cadence": "80-90 rpm",
-                            "technique": "Single track, curvas, subidas técnicas"
-                        }
-                    }
-                ]
-            },
-            "Sunday": {
-                "day": "Domingo",
-                "workouts": [
-                    {
-                        "type": "Corrida Longa",
-                        "focus": "Longão Z1-Z2",
-                        "duration": 60 + int(progress * 30),  # 1h-1h30
-                        "details": {
-                            "warmup": "15min Z1",
-                            "main": f"{30 + int(progress * 30)}min Z2",
-                            "cooldown": "15min Z1",
-                            "rpe": "5-6/10"
-                        }
-                    },
-                    {
-                        "type": "Recuperação",
-                        "focus": "Flexibilidade + Liberação",
-                        "duration": 30,
-                        "details": {
-                            "foam_rolling": "15min corpo todo",
-                            "stretching": "15min principais grupos"
-                        }
-                    }
-                ]
-            }
-        }
-        
-        return weekly_plan
+init_db()
 
-# Interface Principal
+# ---------------- USER PROFILE ----------------
+USER_PROFILE = {
+    'age': 29,
+    'height': 1.90,
+    'weight': 110,
+    'target_weight': 78,
+    'target_date': '2026-12-31',
+    'fc_max': 178,
+    'resting_hr': 60,  # estimated
+    'level': 'intermediate',
+    'disponibility_weekday': 1.5,  # hours
+    'disponibility_weekend': 5  # hours
+}
+
+# Calculate HR Zones (based on Karvonen)
+def calculate_hr_zones(fc_max, resting_hr=60):
+    hr_reserve = fc_max - resting_hr
+    zones = {
+        'Z1 (Recovery)': (resting_hr + 0.5 * hr_reserve, resting_hr + 0.6 * hr_reserve),
+        'Z2 (Endurance)': (resting_hr + 0.6 * hr_reserve, resting_hr + 0.7 * hr_reserve),
+        'Z3 (Tempo)': (resting_hr + 0.7 * hr_reserve, resting_hr + 0.8 * hr_reserve),
+        'Z4 (Threshold)': (resting_hr + 0.8 * hr_reserve, resting_hr + 0.9 * hr_reserve),
+        'Z5 (VO2max)': (resting_hr + 0.9 * hr_reserve, fc_max)
+    }
+    return zones
+
+HR_ZONES = calculate_hr_zones(USER_PROFILE['fc_max'])
+
+# ---------------- CALORIE CALCULATIONS ----------------
+def calculate_bmr(weight, height, age):
+    # Mifflin-St Jeor
+    return 10 * weight + 6.25 * height * 100 - 5 * age + 5
+
+def calculate_tdee(weight, height, age, activity_factor=1.6):
+    bmr = calculate_bmr(weight, height, age)
+    return bmr * activity_factor
+
+# ---------------- NUTRITION PLAN ----------------
+def generate_nutrition_plan(weight, height, age, target_weight, target_date):
+    bmr = calculate_bmr(weight, height, age)
+    
+    # Activity factor for high training load (1.7)
+    tdee = bmr * 1.7
+    
+    # Calculate deficit needed
+    current_date = datetime.datetime.now()
+    target_date_obj = datetime.datetime.strptime(target_date, '%Y-%m-%d')
+    days_remaining = (target_date_obj - current_date).days
+    
+    total_weight_loss = weight - target_weight  # 32kg
+    calories_per_kg_fat = 7700
+    total_calorie_deficit = total_weight_loss * calories_per_kg_fat
+    daily_deficit = total_calorie_deficit / days_remaining if days_remaining > 0 else 1000
+    
+    # Cap deficit at 1000 to avoid undernourishment
+    daily_deficit = min(daily_deficit, 1000)
+    
+    # Ensure minimum intake
+    min_intake = 1800
+    target_calories = max(tdee - daily_deficit, min_intake)
+    
+    # Macro split (40% Carbs, 30% Protein, 30% Fat)
+    carbs = (target_calories * 0.40) / 4
+    protein = (target_calories * 0.30) / 4
+    fat = (target_calories * 0.30) / 9
+    
+    # Adjust protein for athlete (2.0g/kg)
+    protein_athlete = weight * 2.0
+    protein = max(protein, protein_athlete)
+    
+    return {
+        'bmr': bmr,
+        'tdee': tdee,
+        'target_calories': target_calories,
+        'daily_deficit': daily_deficit,
+        'carbs_g': carbs,
+        'protein_g': protein,
+        'fat_g': fat,
+        'days_remaining': days_remaining
+    }
+
+# ---------------- TRAINING PLAN ----------------
+def generate_training_plan(week_number):
+    # Periodization: 4-week blocks
+    block = (week_number - 1) // 4 + 1
+    week_in_block = (week_number - 1) % 4 + 1
+    
+    # Intensity progression
+    if block == 1:  # Foundation
+        volume_mult = 0.7 + (week_in_block - 1) * 0.1
+        intensity = 'Low-Moderate (Z1-Z2)'
+        bike_hr_zones = ['Z2', 'Z2', 'Z2']
+    elif block == 2:  # Build
+        volume_mult = 0.9 + (week_in_block - 1) * 0.05
+        intensity = 'Moderate-High (Z2-Z3)'
+        bike_hr_zones = ['Z2', 'Z3', 'Z2']
+    elif block == 3:  # Intensity
+        volume_mult = 0.95 + (week_in_block - 1) * 0.05
+        intensity = 'High (Z3-Z4)'
+        bike_hr_zones = ['Z3', 'Z4', 'Z3']
+    else:  # Peak
+        volume_mult = 0.8 + (week_in_block - 1) * 0.1
+        intensity = 'Very High (Z4-Z5)'
+        bike_hr_zones = ['Z3', 'Z4', 'Z4']
+    
+    # Weekly schedule (days 1-7)
+    schedule = {
+        1: {'type': 'Musculação', 'focus': 'Força', 'duration': 1.5},
+        2: {'type': 'MTB + Musculação', 'focus': 'Endurance + Força', 'duration': 1.5},
+        3: {'type': 'Corrida + Musculação', 'focus': 'Condicionamento', 'duration': 1.5},
+        4: {'type': 'MTB + Musculação', 'focus': 'Resistência', 'duration': 1.5},
+        5: {'type': 'Corrida + Musculação', 'focus': 'Ritmo', 'duration': 1.5},
+        6: {'type': 'MTB Longo', 'focus': 'Resistência', 'duration': 4.5},
+        7: {'type': 'Corrida Longa', 'focus': 'Resistência', 'duration': 4.0}
+    }
+    
+    # Bike specific workouts
+    bike_workouts = {
+        2: {'duration': 60, 'zones': bike_hr_zones[0], 'cadence': 85},
+        4: {'duration': 70, 'zones': bike_hr_zones[1], 'cadence': 90},
+        6: {'duration': 180, 'zones': bike_hr_zones[2], 'cadence': 80},
+    }
+    
+    return {
+        'week': week_number,
+        'block': block,
+        'volume_mult': volume_mult,
+        'intensity': intensity,
+        'schedule': schedule,
+        'bike_workouts': bike_workouts
+    }
+
+# ---------------- MAIN APP ----------------
 def main():
-    load_css()
-    
-    # Inicialização
-    db = DatabaseManager()
-    athlete = AthleteProfile()
-    
-    # Sidebar Premium
+    # Sidebar
     with st.sidebar:
         st.markdown("""
-        <div style="text-align: center; padding: 2rem 0;">
-            <h2 style="color: #667eea; margin: 0;">🚴‍♂️ PRO AI COACH</h2>
-            <p style="color: #a0a0b0; font-size: 0.9rem;">Sistema de Elite v2.0</p>
+        <div style="text-align: center; padding: 20px 0;">
+            <span style="font-size: 3rem;">🚴</span>
+            <h2 style="color: #00d4ff;">XCM Coach</h2>
+            <p style="color: #888; font-size: 0.9rem;">Duatlo & MTB Expert</p>
         </div>
         """, unsafe_allow_html=True)
         
-        # Perfil do Atleta
+        selected = option_menu(
+            menu_title=None,
+            options=["Dashboard", "Treinos", "Nutrição", "Progresso", "Coach AI"],
+            icons=["house", "bicycle", "egg", "graph-up", "robot"],
+            menu_icon="cast",
+            default_index=0,
+            styles={
+                "container": {"padding": "0!important", "background": "transparent"},
+                "icon": {"color": "#00d4ff", "font-size": "1.2rem"},
+                "nav-link": {
+                    "color": "#888",
+                    "font-size": "1rem",
+                    "margin": "5px 0",
+                    "border-radius": "10px",
+                    "padding": "12px 15px",
+                    "transition": "all 0.3s"
+                },
+                "nav-link-selected": {
+                    "background": "rgba(0, 212, 255, 0.15)",
+                    "color": "#00d4ff",
+                    "border-left": "3px solid #00d4ff"
+                }
+            }
+        )
+        
         st.markdown("---")
-        st.markdown("### 👤 Perfil do Atleta")
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("Idade", "29")
-            st.metric("Altura", "1.90m")
-            st.metric("FC Máx", "178 bpm")
-        with col2:
-            st.metric("Peso", "110kg")
-            st.metric("Meta", "78kg")
-            st.metric("Prazo", "31/12/26")
-        
-        # Progresso
-        st.markdown("---")
-        st.markdown("### 📊 Progresso")
-        
-        months_to_goal = 30  # Jul/2026 até Dez/2026
-        weight_lost = 0  # Inicial
-        progress_pct = 0
+        st.markdown("""
+        <div style="font-size: 0.8rem; color: #555; padding: 10px;">
+            <p>⚡ <span style="color: #888;">Peso meta: 78kg</span></p>
+            <p>📅 <span style="color: #888;">Meta: 31/12/2026</span></p>
+            <p>❤️ <span style="color: #888;">FC Máx: 178 bpm</span></p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Main content
+    if selected == "Dashboard":
+        render_dashboard()
+    elif selected == "Treinos":
+        render_training()
+    elif selected == "Nutrição":
+        render_nutrition()
+    elif selected == "Progresso":
+        render_progress()
+    elif selected == "Coach AI":
+        render_coach()
+
+def render_dashboard():
+    st.markdown('<div class="title-gradient">🏆 Dashboard do Atleta</div>', unsafe_allow_html=True)
+    
+    # Nutrition plan
+    plan = generate_nutrition_plan(
+        USER_PROFILE['weight'],
+        USER_PROFILE['height'],
+        USER_PROFILE['age'],
+        USER_PROFILE['target_weight'],
+        USER_PROFILE['target_date']
+    )
+    
+    # Current week
+    start_date = datetime.datetime(2026, 1, 1)
+    today = datetime.datetime.now()
+    week_number = ((today - start_date).days // 7) + 1
+    week_number = max(1, min(week_number, 26))  # 6 months
+    
+    training = generate_training_plan(week_number)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown(f"""
+        <div class="card">
+            <h4 style="color: #00d4ff; margin-bottom: 15px;">📊 Status Atual</h4>
+            <div class="metric-card">
+                <span style="color: #888;">Peso</span>
+                <h2 style="color: white;">{USER_PROFILE['weight']} kg</h2>
+                <span style="color: #ff6b6b;">Meta: {USER_PROFILE['target_weight']} kg</span>
+            </div>
+            <div class="metric-card">
+                <span style="color: #888;">IMC</span>
+                <h2 style="color: white;">{USER_PROFILE['weight'] / (USER_PROFILE['height']**2):.1f}</h2>
+            </div>
+            <div class="metric-card">
+                <span style="color: #888;">Semana</span>
+                <h2 style="color: white;">{week_number} / 26</h2>
+                <span style="color: #00d4ff;">Bloco {training['block']}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        deficit = plan['daily_deficit']
+        pct_progress = min(100, (110 - USER_PROFILE['weight']) / (110 - 78) * 100)
         
         st.markdown(f"""
-        <div class="custom-progress">
-            <p style="color: #a0a0b0; margin-bottom: 0.5rem;">Rumo aos 78kg</p>
-            <div class="progress-fill" style="width: {progress_pct}%;"></div>
-            <p style="color: #a0a0b0; margin-top: 0.5rem;">{weight_lost:.1f}kg / 32kg</p>
+        <div class="card">
+            <h4 style="color: #00d4ff; margin-bottom: 15px;">🔥 Déficit Calórico</h4>
+            <div class="metric-card">
+                <span style="color: #888;">Déficit Diário</span>
+                <h2 style="color: #ff6b6b;">-{deficit:.0f} kcal</h2>
+            </div>
+            <div class="metric-card">
+                <span style="color: #888;">Meta Diária</span>
+                <h2 style="color: white;">{plan['target_calories']:.0f} kcal</h2>
+            </div>
+            <div style="margin-top: 15px;">
+                <span style="color: #888;">Progresso emagrecimento</span>
+                <div style="background: rgba(255,255,255,0.1); border-radius: 10px; height: 10px; margin: 8px 0;">
+                    <div style="background: linear-gradient(90deg, #00d4ff, #7b2ffc); width: {pct_progress}%; height: 100%; border-radius: 10px;"></div>
+                </div>
+                <span style="color: #00d4ff;">{pct_progress:.1f}%</span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
-        
-        # Navegação
-        st.markdown("---")
-        st.markdown("### 🎯 Navegação")
-        
-        page = st.radio(
-            "",
-            ["🏠 Dashboard", "🍽️ Plano Alimentar", "🏋️ Plano de Treinos", 
-             "❤️ Zonas Cardíacas", "📈 Progressão 6 Meses", "📝 Registros Diários",
-             "📊 Análises", "📅 Calendário de Provas"],
-            label_visibility="collapsed"
-        )
     
-    # Conteúdo Principal
-    if "Dashboard" in page:
-        render_dashboard(athlete, db)
-    elif "Alimentar" in page:
-        render_nutrition_plan(athlete, db)
-    elif "Treinos" in page:
-        render_workout_plan(athlete, db)
-    elif "Cardíacas" in page:
-        render_heart_zones(athlete)
-    elif "Progressão" in page:
-        render_progression(athlete)
-    elif "Registros" in page:
-        render_daily_logs(db)
-    elif "Análises" in page:
-        render_analytics(db)
-    elif "Calendário" in page:
-        render_race_calendar()
+    with col3:
+        st.markdown(f"""
+        <div class="card">
+            <h4 style="color: #00d4ff; margin-bottom: 15px;">📅 Treino de Hoje</h4>
+            <div style="background: rgba(0,212,255,0.05); border-radius: 15px; padding: 15px; border: 1px solid rgba(0,212,255,0.1);">
+                <p style="font-size: 1.2rem; font-weight: 600; color: white;">{training['schedule'][today.isoweekday()]['type']}</p>
+                <p style="color: #888;">Foco: {training['schedule'][today.isoweekday()]['focus']}</p>
+                <p style="color: #888;">Duração: {training['schedule'][today.isoweekday()]['duration']}h</p>
+                <p style="color: #00d4ff;">Intensidade: {training['intensity']}</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # HR Zones
+    st.markdown('<div class="section-title">❤️ Zonas de Frequência Cardíaca</div>', unsafe_allow_html=True)
+    cols = st.columns(5)
+    for i, (zone, (low, high)) in enumerate(HR_ZONES.items()):
+        with cols[i]:
+            st.markdown(f"""
+            <div class="card" style="text-align: center; padding: 15px;">
+                <p style="color: #888; font-size: 0.8rem;">{zone}</p>
+                <h3 style="color: white;">{int(low)}-{int(high)}</h3>
+                <p style="color: #555; font-size: 0.7rem;">bpm</p>
+            </div>
+            """, unsafe_allow_html=True)
 
-def render_dashboard(athlete, db):
-    st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">🏆 Dashboard do Atleta</h1>
-        <p class="hero-subtitle">Acompanhe sua evolução em tempo real</p>
+def render_training():
+    st.markdown('<div class="title-gradient">🚴 Plano de Treinos</div>', unsafe_allow_html=True)
+    
+    start_date = datetime.datetime(2026, 1, 1)
+    today = datetime.datetime.now()
+    week_number = ((today - start_date).days // 7) + 1
+    week_number = max(1, min(week_number, 26))
+    
+    training = generate_training_plan(week_number)
+    
+    st.markdown(f"""
+    <div class="card">
+        <h4 style="color: #00d4ff;">Semana {week_number} - Bloco {training['block']}</h4>
+        <p><span style="color: #888;">Intensidade:</span> {training['intensity']}</p>
+        <p><span style="color: #888;">Volume:</span> {training['volume_mult']:.0%} da carga máxima</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Métricas Principais
-    col1, col2, col3, col4 = st.columns(4)
+    # Weekly schedule
+    days = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo']
+    cols = st.columns(7)
     
-    metrics = [
-        ("🎯 Peso Atual", "110 kg", "Meta: 78 kg", "↓ 32 kg"),
-        ("🔥 Calorias Hoje", "2.450", "Déficit: 500", "Meta: 2.580"),
-        ("⏱️ Treino Hoje", "1h30", "Z2 Endurance", "RPE: 6/10"),
-        ("💪 Adesão", "94%", "+2% vs semana", "Excelente")
-    ]
-    
-    for col, (label, value, sublabel, delta) in zip([col1, col2, col3, col4], metrics):
-        with col:
+    for i, day in enumerate(days):
+        day_num = i + 1
+        workout = training['schedule'].get(day_num, {})
+        with cols[i]:
             st.markdown(f"""
-            <div class="metric-card">
-                <div class="metric-label">{label}</div>
-                <div class="metric-value">{value}</div>
-                <div style="color: #a0a0b0;">{sublabel}</div>
-                <div class="metric-delta">{delta}</div>
+            <div class="card" style="padding: 12px; min-height: 180px;">
+                <h5 style="color: #00d4ff; font-size: 0.9rem;">{day}</h5>
+                <p style="font-size: 0.8rem; color: white;">{workout.get('type', 'Descanso')}</p>
+                <p style="font-size: 0.7rem; color: #888;">{workout.get('focus', '')}</p>
+                <p style="font-size: 0.7rem; color: #555;">{workout.get('duration', 0)}h</p>
             </div>
             """, unsafe_allow_html=True)
     
-    # Gráficos
+    # Bike specific workouts
+    st.markdown('<div class="section-title">🚵 Treinos de MTB Detalhados</div>', unsafe_allow_html=True)
+    
+    for day_num, bike_wk in training['bike_workouts'].items():
+        zones = bike_wk['zones'].split('+')
+        hr_range = []
+        for z in zones:
+            if z in HR_ZONES:
+                low, high = HR_ZONES[z]
+                hr_range.append(f"{int(low)}-{int(high)}")
+        
+        st.markdown(f"""
+        <div class="card">
+            <h5 style="color: #00d4ff;">{days[day_num-1]}</h5>
+            <p><span style="color: #888;">Duração:</span> {bike_wk['duration']} min</p>
+            <p><span style="color: #888;">Zona FC:</span> {bike_wk['zones']} ({' / '.join(hr_range)} bpm)</p>
+            <p><span style="color: #888;">Cadência Meta:</span> {bike_wk['cadence']} RPM</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Log workout
+    st.markdown('<div class="section-title">📝 Log de Treino</div>', unsafe_allow_html=True)
+    
+    with st.form("workout_log"):
+        col1, col2 = st.columns(2)
+        with col1:
+            workout_type = st.selectbox("Tipo", ["MTB", "Corrida", "Musculação", "Duatlo"])
+            duration = st.number_input("Duração (minutos)", min_value=10, max_value=300, value=60)
+            hr_avg = st.number_input("FC Média (bpm)", min_value=60, max_value=200, value=140)
+        with col2:
+            cadence = st.number_input("Cadência Média (RPM)", min_value=40, max_value=120, value=85) if workout_type in ["MTB", "Duatlo"] else 0
+            distance = st.number_input("Distância (km)", min_value=0.0, max_value=200.0, value=20.0)
+            notes = st.text_area("Observações")
+        
+        if st.form_submit_button("Salvar Treino"):
+            conn = sqlite3.connect('coach_data.db')
+            c = conn.cursor()
+            c.execute("""INSERT INTO workouts 
+                         (date, type, duration_minutes, hr_avg, cadence_avg, distance_km, notes)
+                         VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                      (datetime.datetime.now().strftime('%Y-%m-%d'),
+                       workout_type, duration, hr_avg, cadence, distance, notes))
+            conn.commit()
+            conn.close()
+            st.success("✅ Treino registrado com sucesso!")
+
+def render_nutrition():
+    st.markdown('<div class="title-gradient">🍽️ Plano Nutricional</div>', unsafe_allow_html=True)
+    
+    plan = generate_nutrition_plan(
+        USER_PROFILE['weight'],
+        USER_PROFILE['height'],
+        USER_PROFILE['age'],
+        USER_PROFILE['target_weight'],
+        USER_PROFILE['target_date']
+    )
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### 📈 Projeção de Peso")
-        
-        months = ['Jul/26', 'Ago/26', 'Set/26', 'Out/26', 'Nov/26', 'Dez/26']
-        projected = [110, 107, 104, 101, 98, 95]  # Projeção realista até Dez/2026
-        target = [110, 106, 102, 98, 94, 90]  # Meta ajustada
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=months, y=projected, mode='lines+markers',
-                                name='Projeção Realista', line=dict(color='#667eea', width=3)))
-        fig.add_trace(go.Scatter(x=months, y=target, mode='lines+markers',
-                                name='Meta Intermediária', line=dict(color='#764ba2', width=2, dash='dash')))
-        fig.add_hline(y=78, line_dash="dot", line_color="green", 
-                     annotation_text="Meta Final: 78kg")
-        
-        fig.update_layout(
-            template='plotly_dark',
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            hovermode='x unified'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        st.markdown("### 🏋️ Distribuição Semanal")
-        
-        workout_types = ['Musculação', 'Ciclismo', 'Corrida', 'Flexibilidade']
-        hours = [6, 6.5, 3, 0.5]
-        colors = ['#FF4B4B', '#0068C9', '#00C853', '#FFD700']
-        
-        fig = go.Figure(data=[go.Pie(labels=workout_types, values=hours, 
-                                     hole=.4, marker_colors=colors)])
-        fig.update_layout(
-            template='plotly_dark',
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-    
-    # Resumo Semanal
-    st.markdown("### 📅 Resumo da Semana")
-    
-    days = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom']
-    durations = [150, 105, 150, 105, 120, 240, 105]  # Minutos
-    
-    fig = go.Figure(data=[
-        go.Bar(name='Ciclismo', x=days, y=[90, 0, 90, 0, 60, 210, 0], 
-               marker_color='#0068C9'),
-        go.Bar(name='Musculação', x=days, y=[60, 60, 60, 60, 60, 60, 0], 
-               marker_color='#FF4B4B'),
-        go.Bar(name='Corrida', x=days, y=[0, 45, 0, 45, 0, 0, 75], 
-               marker_color='#00C853')
-    ])
-    
-    fig.update_layout(
-        barmode='stack',
-        template='plotly_dark',
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        yaxis_title='Minutos'
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-def render_nutrition_plan(athlete, db):
-    st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">🍽️ Plano Nutricional Premium</h1>
-        <p class="hero-subtitle">Nutrição de precisão para alta performance</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Cálculos Nutricionais
-    calc = NutritionCalculator()
-    macros = calc.calculate_macros(110, 78, 30)
-    
-    # Macros Overview
-    st.markdown("### 🎯 Metas Diárias Personalizadas")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("🎯 Calorias Alvo", f"{macros['target_calories']} kcal", 
-                 f"-{macros['deficit']} kcal")
-    with col2:
-        st.metric("💪 Proteínas", f"{macros['protein_g']}g", 
-                 f"{macros['protein_pct']}%")
-    with col3:
-        st.metric("🍚 Carboidratos", f"{macros['carbs_g']}g", 
-                 f"{macros['carbs_pct']}%")
-    with col4:
-        st.metric("🥑 Gorduras", f"{macros['fat_g']}g", 
-                 f"{macros['fat_pct']}%")
-    
-    # Plano de Refeições
-    st.markdown("---")
-    st.markdown("### 📋 Refeições do Dia")
-    
-    meals_plan = {
-        "Café da Manhã (06:30)": {
-            "items": [
-                ("Aveia em Flocos", 40),
-                ("Whey Protein", 30),
-                ("Banana", 120),
-                ("Leite Desnatado", 200),
-                ("Semente de Chia", 10)
-            ],
-            "timing": "Pré-treino",
-            "notes": "Consumir 1h antes do treino"
-        },
-        "Lanche Pré-Treino (09:00)": {
-            "items": [
-                ("Pão Integral", 50),
-                ("Ovo Inteiro", 100),
-                ("Suco de Laranja Natural", 100)
-            ],
-            "timing": "30min antes",
-            "notes": "Refeição leve para não pesar"
-        },
-        "Almoço (12:30)": {
-            "items": [
-                ("Peito de Frango Grelhado", 200),
-                ("Arroz Integral Cozido", 150),
-                ("Brócolis Cozido", 200),
-                ("Azeite de Oliva", 15)
-            ],
-            "timing": "Pós-treino",
-            "notes": "Maior refeição do dia"
-        },
-        "Lanche da Tarde (16:00)": {
-            "items": [
-                ("Iogurte Grego Natural", 200),
-                ("Aveia em Flocos", 30),
-                ("Maçã", 150),
-                ("Castanha do Pará", 20)
-            ],
-            "timing": "Recuperação",
-            "notes": "Energia para segundo treino"
-        },
-        "Jantar (19:30)": {
-            "items": [
-                ("Salmão", 200),
-                ("Batata Doce Cozida", 150),
-                ("Espinafre", 100),
-                ("Tomate", 100)
-            ],
-            "timing": "Recuperação noturna",
-            "notes": "Foco em proteínas e antioxidantes"
-        },
-        "Ceia (22:00)": {
-            "items": [
-                ("Queijo Cottage", 100),
-                ("Amêndoas", 15)
-            ],
-            "timing": "Anti-catabólico",
-            "notes": "Caseína para liberação lenta"
-        }
-    }
-    
-    for meal_name, meal_data in meals_plan.items():
-        with st.expander(f"**{meal_name}** - {meal_data['timing']}", expanded=False):
-            st.markdown(f"*{meal_data['notes']}*")
-            
-            total_cal = 0
-            total_prot = 0
-            
-            for food, qty in meal_data['items']:
-                # Buscar dados do banco
-                c = db.conn.cursor()
-                c.execute("SELECT * FROM food_database WHERE name=?", (food,))
-                result = c.fetchone()
-                
-                if result:
-                    cal = (result[2] * qty / 100)
-                    prot = (result[3] * qty / 100)
-                    total_cal += cal
-                    total_prot += prot
-                    
-                    st.markdown(f"""
-                    <div style="display: flex; justify-content: space-between; 
-                              padding: 0.5rem; background: rgba(30,30,47,0.5); 
-                              border-radius: 8px; margin: 0.3rem 0;">
-                        <span>🍽️ {food}</span>
-                        <span>{qty}g</span>
-                        <span>{cal:.0f} kcal</span>
-                        <span>{prot:.1f}g prot</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-            
-            st.markdown(f"""
-            <div style="text-align: right; color: #667eea; font-weight: bold;">
-                Total: {total_cal:.0f} kcal | {total_prot:.0f}g proteína
-            </div>
-            """, unsafe_allow_html=True)
-    
-    # Suplementação
-    st.markdown("---")
-    st.markdown("### 💊 Suplementação Recomendada")
-    
-    supplements = [
-        ("Whey Protein", "30g pós-treino", "Recuperação muscular rápida"),
-        ("Creatina", "5g/dia", "Força e potência muscular"),
-        ("Ômega-3", "2g/dia", "Anti-inflamatório, cardiovascular"),
-        ("Vitamina D", "2000 UI/dia", "Imunidade e saúde óssea"),
-        ("Magnésio", "400mg antes dormir", "Recuperação e sono"),
-        ("Multivitamínico", "1 dose manhã", "Micronutrientes essenciais"),
-        ("BCAA", "5g intra-treino", "Preservação muscular em treinos longos"),
-        ("Maltodextrina", "30-60g/h (treinos >2h)", "Energia sustentada")
-    ]
-    
-    for sup, dose, benefit in supplements:
         st.markdown(f"""
-        <div class="food-card">
-            <strong>{sup}</strong> - {dose}<br>
-            <small style="color: #a0a0b0;">{benefit}</small>
+        <div class="card">
+            <h4 style="color: #00d4ff;">Metas Diárias</h4>
+            <div class="metric-card">
+                <span style="color: #888;">Calorias</span>
+                <h2 style="color: white;">{plan['target_calories']:.0f} kcal</h2>
+            </div>
+            <div class="metric-card">
+                <span style="color: #888;">Proteínas</span>
+                <h2 style="color: #ff6b6b;">{plan['protein_g']:.0f} g</h2>
+                <span style="color: #888;">{plan['protein_g']*4:.0f} kcal</span>
+            </div>
+            <div class="metric-card">
+                <span style="color: #888;">Carboidratos</span>
+                <h2 style="color: #00d4ff;">{plan['carbs_g']:.0f} g</h2>
+                <span style="color: #888;">{plan['carbs_g']*4:.0f} kcal</span>
+            </div>
+            <div class="metric-card">
+                <span style="color: #888;">Gorduras</span>
+                <h2 style="color: #ffd93d;">{plan['fat_g']:.0f} g</h2>
+                <span style="color: #888;">{plan['fat_g']*9:.0f} kcal</span>
+            </div>
         </div>
         """, unsafe_allow_html=True)
-
-def render_workout_plan(athlete, db):
-    st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">🏋️ Programa de Treinamento</h1>
-        <p class="hero-subtitle">Periodização científica para resultados máximos</p>
-    </div>
-    """, unsafe_allow_html=True)
     
-    # Seleção de semana
-    week = st.slider("Semana do Programa", 1, 26, 1)
-    
-    planner = WorkoutPlanner()
-    weekly_plan = planner.generate_weekly_plan(week)
-    
-    # Métricas da Semana
-    total_duration = sum(
-        workout['duration'] 
-        for day in weekly_plan.values() 
-        for workout in day['workouts']
-    )
-    total_hours = total_duration / 60
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("⏱️ Volume Total", f"{total_hours:.1f}h")
     with col2:
-        st.metric("🏋️ Musculação", "6 sessões")
-    with col3:
-        st.metric("🚴 Ciclismo", "4 sessões")
-    with col4:
-        st.metric("🏃 Corrida", "3 sessões")
+        st.markdown(f"""
+        <div class="card">
+            <h4 style="color: #00d4ff;">Estratégia</h4>
+            <p><span style="color: #888;">TMB:</span> {plan['bmr']:.0f} kcal</p>
+            <p><span style="color: #888;">Gasto Total:</span> {plan['tdee']:.0f} kcal</p>
+            <p><span style="color: #ff6b6b;">Déficit:</span> -{plan['daily_deficit']:.0f} kcal/dia</p>
+            <p><span style="color: #888;">Dias restantes:</span> {plan['days_remaining']}</p>
+            <div style="margin-top: 15px; background: rgba(0,212,255,0.05); padding: 10px; border-radius: 10px;">
+                <p style="color: #888; font-size: 0.9rem;">💡 Distribuição: 40% Carbs • 30% Protein • 30% Fat</p>
+                <p style="color: #888; font-size: 0.9rem;">🍗 2.0g de proteína/kg de peso para atleta</p>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
     
-    st.markdown("---")
+    # Food log
+    st.markdown('<div class="section-title">📝 Log Alimentar</div>', unsafe_allow_html=True)
     
-    # Plano Diário
-    for day_key, day_data in weekly_plan.items():
-        st.markdown(f"### {day_data['day']}")
+    conn = sqlite3.connect('coach_data.db')
+    
+    with st.form("food_log"):
+        col1, col2, col3 = st.columns(3)
         
-        for workout in day_data['workouts']:
-            workout_type = workout['type'].lower()
+        with col1:
+            meal_type = st.selectbox("Refeição", ["Café da Manhã", "Lanche Manhã", "Almoço", "Lanche Tarde", "Jantar", "Ceia"])
+            food_name = st.text_input("Alimento", placeholder="Ex: Peito de Frango")
+        
+        with col2:
+            quantity = st.number_input("Quantidade", min_value=0.0, value=100.0)
+            unit = st.selectbox("Unidade", ["g", "ml", "unidade", "colher"])
+        
+        with col3:
+            # Auto-fill from food database
+            conn_db = sqlite3.connect('coach_data.db')
+            foods_df = pd.read_sql_query("SELECT food_name, calories_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g FROM food_db", conn_db)
+            conn_db.close()
             
-            if 'musculação' in workout_type:
-                card_class = "musculacao"
-                emoji = "💪"
-            elif 'ciclismo' in workout_type or 'mtb' in workout_type:
-                card_class = "ciclismo"
-                emoji = "🚴"
-            elif 'corrida' in workout_type:
-                card_class = "corrida"
-                emoji = "🏃"
+            if not foods_df.empty:
+                food_options = foods_df['food_name'].tolist()
+                selected_food = st.selectbox("Ou escolha do banco", [""] + food_options)
+                if selected_food:
+                    food_data = foods_df[foods_df['food_name'] == selected_food].iloc[0]
+                    calories = food_data['calories_per_100g'] * (quantity / 100)
+                    protein = food_data['protein_per_100g'] * (quantity / 100)
+                    carbs = food_data['carbs_per_100g'] * (quantity / 100)
+                    fat = food_data['fat_per_100g'] * (quantity / 100)
+                    st.info(f"💡 {selected_food}: {calories:.0f} kcal | P:{protein:.1f}g C:{carbs:.1f}g G:{fat:.1f}g")
+                else:
+                    calories = st.number_input("Calorias", min_value=0.0, value=100.0)
+                    protein = st.number_input("Proteína (g)", min_value=0.0, value=10.0)
+                    carbs = st.number_input("Carboidratos (g)", min_value=0.0, value=15.0)
+                    fat = st.number_input("Gordura (g)", min_value=0.0, value=5.0)
             else:
-                card_class = ""
-                emoji = "🧘"
-            
-            st.markdown(f"""
-            <div class="workout-card {card_class}">
-                <h4>{emoji} {workout['focus']}</h4>
-                <p><strong>Duração:</strong> {workout['duration']} minutos</p>
-            </div>
-            """, unsafe_allow_html=True)
-            
-            if 'exercises' in workout:
-                with st.expander("Ver exercícios"):
-                    for exercise in workout['exercises']:
-                        st.write(f"• {exercise}")
-            
-            if 'details' in workout:
-                with st.expander("Ver detalhes do treino"):
-                    for key, value in workout['details'].items():
-                        st.write(f"**{key.replace('_', ' ').title()}:** {value}")
+                calories = st.number_input("Calorias", min_value=0.0, value=100.0)
+                protein = st.number_input("Proteína (g)", min_value=0.0, value=10.0)
+                carbs = st.number_input("Carboidratos (g)", min_value=0.0, value=15.0)
+                fat = st.number_input("Gordura (g)", min_value=0.0, value=5.0)
         
-        st.markdown("---")
-
-def render_heart_zones(athlete):
-    st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">❤️ Zonas de Frequência Cardíaca</h1>
-        <p class="hero-subtitle">Baseado na sua FC Máx de 178 bpm</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    zones = {
-        "Z1": {"name": "Recuperação Ativa", "range": "<116 bpm", "pct": "<65%", 
-               "use": "Aquecimento, volta calma, dias de recuperação",
-               "benefit": "Recuperação, técnica, base aeróbica leve",
-               "rpe": "1-3/10"},
-        "Z2": {"name": "Endurance Aeróbica", "range": "116-133 bpm", "pct": "66-75%", 
-               "use": "Treinos longos, base, queima de gordura",
-               "benefit": "Eficiência cardiovascular, oxidação de gordura",
-               "rpe": "4-5/10"},
-        "Z3": {"name": "Tempo/Ritmo", "range": "134-151 bpm", "pct": "76-85%", 
-               "use": "Ritmo de prova, sustentação",
-               "benefit": "Lactato threshold, endurance muscular",
-               "rpe": "6-7/10"},
-        "Z4": {"name": "Limiar Anaeróbico", "range": "152-163 bpm", "pct": "86-92%", 
-               "use": "Intervalados, FTP, subidas fortes",
-               "benefit": "Tolerância ao lactato, potência sustentada",
-               "rpe": "7-8/10"},
-        "Z5": {"name": "VO2 Máximo", "range": "164-178 bpm", "pct": "93-100%", 
-               "use": "Sprints, ataques, tiros curtos",
-               "benefit": "Potência máxima, capacidade anaeróbica",
-               "rpe": "9-10/10"}
-    }
-    
-    for zone_code, zone_data in zones.items():
-        zone_class = f"zone-{zone_code.lower()}"
-        
-        st.markdown(f"""
-        <div class="food-card">
-            <span class="zone-badge {zone_class}">{zone_code}</span>
-            <strong>{zone_data['name']}</strong><br>
-            <div style="margin-top: 1rem;">
-                <strong>Faixa:</strong> {zone_data['range']} ({zone_data['pct']})<br>
-                <strong>RPE:</strong> {zone_data['rpe']}<br>
-                <strong>Uso Principal:</strong> {zone_data['use']}<br>
-                <strong>Benefício:</strong> {zone_data['benefit']}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    # Gráfico Visual
-    st.markdown("### 📊 Distribuição Visual")
-    
-    fig = go.Figure()
-    
-    zone_colors = ['#00C853', '#64DD17', '#FFD700', '#FF9100', '#FF1744']
-    zone_names = ['Z1', 'Z2', 'Z3', 'Z4', 'Z5']
-    
-    for i, (name, color) in enumerate(zip(zone_names, zone_colors)):
-        fig.add_trace(go.Bar(
-            name=name,
-            x=['Zonas'],
-            y=[1],
-            marker_color=color,
-            text=name,
-            textposition='inside'
-        ))
-    
-    fig.update_layout(
-        barmode='stack',
-        showlegend=False,
-        height=100,
-        template='plotly_dark',
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)'
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-def render_progression(athlete):
-    st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">📈 Progressão de 6 Meses</h1>
-        <p class="hero-subtitle">Periodização completa Julho-Dezembro 2026</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Linha do tempo
-    months = [
-        {
-            "month": "Julho 2026",
-            "phase": "Adaptação",
-            "weeks": "1-4",
-            "volume": "8-10h/semana",
-            "intensity": "Z1-Z2: 70% | Z3-Z4: 30%",
-            "focus": "Adaptação muscular, base aeróbica, técnica",
-            "weight_goal": "110kg → 107kg (-3kg)",
-            "nutrition": "Déficit 300-400 kcal, adaptação metabólica",
-            "tests": "Teste FTP, avaliação física completa"
-        },
-        {
-            "month": "Agosto 2026",
-            "phase": "Base",
-            "weeks": "5-8",
-            "volume": "10-12h/semana",
-            "intensity": "Z1-Z2: 65% | Z3-Z4: 35%",
-            "focus": "Aumento volume, endurance, força na musculação",
-            "weight_goal": "107kg → 104.5kg (-2.5kg)",
-            "nutrition": "Déficit 400-500 kcal, periodização de carbs",
-            "tests": "Reavaliação composição corporal"
-        },
-        {
-            "month": "Setembro 2026",
-            "phase": "Construção 1",
-            "weeks": "9-12",
-            "volume": "12-14h/semana",
-            "intensity": "Z1-Z2: 60% | Z3-Z4: 30% | Z5: 10%",
-            "focus": "Introdução VO2 Max, intervalados intensos",
-            "weight_goal": "104.5kg → 102kg (-2.5kg)",
-            "nutrition": "Déficit 500 kcal, nutrição peri-treino",
-            "tests": "Teste de campo 40km MTB"
-        },
-        {
-            "month": "Outubro 2026",
-            "phase": "Construção 2",
-            "weeks": "13-16",
-            "volume": "14-15h/semana",
-            "intensity": "Z1-Z2: 55% | Z3-Z4: 35% | Z5: 10%",
-            "focus": "Pico volume, especificidade XCM, brick training",
-            "weight_goal": "102kg → 99.5kg (-2.5kg)",
-            "nutrition": "Déficit 500-600 kcal, máxima eficiência",
-            "tests": "Simulado XCM 3h"
-        },
-        {
-            "month": "Novembro 2026",
-            "phase": "Específico",
-            "weeks": "17-20",
-            "volume": "12-14h/semana",
-            "intensity": "Z1-Z2: 50% | Z3-Z4: 40% | Z5: 10%",
-            "focus": "Redução volume, aumento intensidade, ritmo prova",
-            "weight_goal": "99.5kg → 97.5kg (-2kg)",
-            "nutrition": "Déficit 400-500 kcal, teste nutrição prova",
-            "tests": "Simulado completo duatlo"
-        },
-        {
-            "month": "Dezembro 2026",
-            "phase": "Competição/Taper",
-            "weeks": "21-24",
-            "volume": "10-12h/semana",
-            "intensity": "Z1-Z2: 60% | Z3-Z4: 25% | Z5: 15%",
-            "focus": "Manutenção forma, frescor para provas",
-            "weight_goal": "97.5kg → 95kg (-2.5kg)*",
-            "nutrition": "Ajuste fino, supercompensação",
-            "tests": "Provas alvo"
-        }
-    ]
-    
-    for month_data in months:
-        with st.expander(f"**{month_data['month']}** - Fase {month_data['phase']} | Meta: {month_data['weight_goal']}", 
-                        expanded=month_data['month'] == "Julho 2026"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown(f"""
-                **Semanas:** {month_data['weeks']}  
-                **Volume:** {month_data['volume']}  
-                **Intensidade:** {month_data['intensity']}  
-                **Foco:** {month_data['focus']}
-                """)
-            
-            with col2:
-                st.markdown(f"""
-                **Nutrição:** {month_data['nutrition']}  
-                **Testes:** {month_data['tests']}
-                """)
-    
-    st.info("""
-    *A meta de 78kg em 31/12/2026 é alcançada com um déficit calórico consistente. 
-    O ritmo de perda de peso é progressivo e sustentável, preservando massa muscular e performance.
-    """)
-    
-    # Gráfico de progressão de carga
-    st.markdown("### 📊 Progressão de Carga de Treino")
-    
-    weeks = list(range(1, 25))
-    volume = [9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 14.5, 14.5, 15, 14.5, 
-              14, 14, 13, 13, 12, 12, 11, 11]
-    intensity = [30, 30, 35, 35, 40, 40, 40, 40, 45, 45, 45, 45, 50, 50, 50, 50, 
-                55, 55, 55, 55, 50, 50, 45, 45]  # % Z3-Z5
-    
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    
-    fig.add_trace(
-        go.Scatter(x=weeks, y=volume, name="Volume (h/sem)", line=dict(color="#667eea", width=3)),
-        secondary_y=False
-    )
-    
-    fig.add_trace(
-        go.Scatter(x=weeks, y=intensity, name="Intensidade (%Z3-Z5)", 
-                  line=dict(color="#FF4B4B", width=3)),
-        secondary_y=True
-    )
-    
-    fig.update_layout(
-        template='plotly_dark',
-        plot_bgcolor='rgba(0,0,0,0)',
-        paper_bgcolor='rgba(0,0,0,0)',
-        hovermode='x unified'
-    )
-    
-    fig.update_xaxes(title_text="Semanas")
-    fig.update_yaxes(title_text="Horas/Semana", secondary_y=False)
-    fig.update_yaxes(title_text="% Intensidade", secondary_y=True)
-    
-    st.plotly_chart(fig, use_container_width=True)
-
-def render_daily_logs(db):
-    st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">📝 Registros Diários</h1>
-        <p class="hero-subtitle">Monitore cada detalhe da sua jornada</p>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    tab1, tab2, tab3 = st.tabs(["💪 Treino", "🍽️ Alimentação", "⚖️ Peso"])
-    
-    with tab1:
-        st.subheader("Registrar Treino")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            workout_date = st.date_input("Data", datetime.now(), key="workout_date")
-            workout_type = st.selectbox("Tipo", ["Musculação", "MTB", "Corrida", "Brick", "Flexibilidade"])
-            duration = st.number_input("Duração (min)", 0, 480, 60)
-            distance = st.number_input("Distância (km)", 0.0, 200.0, 0.0, 0.1)
-        
-        with col2:
-            avg_hr = st.number_input("FC Média", 0, 220, 135)
-            max_hr = st.number_input("FC Máxima", 0, 220, 155)
-            cadence = st.number_input("Cadência Média", 0, 120, 85)
-            zone = st.selectbox("Zona Principal", ["Z1", "Z2", "Z3", "Z4", "Z5"])
-            rpe = st.slider("RPE (Escala de Borg)", 1, 10, 6)
-        
-        feeling = st.select_slider("Sensação", ["😫 Muito Ruim", "😔 Ruim", "😐 Neutro", 
-                                                "🙂 Bom", "😀 Muito Bom", "🤩 Excelente"])
-        
-        notes = st.text_area("Observações", "Treino conforme planejado")
-        
-        if st.button("💾 Salvar Treino", use_container_width=True):
-            # Estimativa de calorias
-            calorie_factors = {
-                "Musculação": 6,
-                "MTB": 11,
-                "Corrida": 12,
-                "Brick": 11.5,
-                "Flexibilidade": 3
-            }
-            calories = duration * calorie_factors.get(workout_type, 8)
-            
-            c = db.conn.cursor()
-            c.execute('''
-                INSERT INTO workouts (date, type, duration_min, distance_km, 
-                avg_hr, max_hr, avg_cadence, zone, rpe, calories_burned, feeling, notes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (workout_date, workout_type, duration, distance, avg_hr, max_hr, 
-                 cadence, zone, rpe, calories, feeling, notes))
-            db.conn.commit()
-            
-            st.success(f"✅ Treino salvo! ~{calories:.0f} calorias queimadas")
-    
-    with tab2:
-        st.subheader("Registrar Refeição")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            meal_date = st.date_input("Data", datetime.now(), key="meal_date")
-            meal_type = st.selectbox("Refeição", [
-                "Café da Manhã", "Lanche Manhã", "Almoço", 
-                "Lanche Tarde", "Jantar", "Ceia", "Intra-treino"
-            ])
-            
-            # Buscar alimentos do banco
-            c = db.conn.cursor()
-            c.execute("SELECT name FROM food_database ORDER BY name")
-            foods = [row[0] for row in c.fetchall()]
-            
-            food_name = st.selectbox("Alimento", foods)
-            portion = st.number_input("Porção (g)", 10, 1000, 100, 10)
-        
-        with col2:
-            # Buscar dados do alimento
-            c.execute("SELECT * FROM food_database WHERE name=?", (food_name,))
-            food_data = c.fetchone()
-            
-            if food_data:
-                cal_portion = (food_data[2] * portion / 100)
-                prot_portion = (food_data[3] * portion / 100)
-                carbs_portion = (food_data[4] * portion / 100)
-                fat_portion = (food_data[5] * portion / 100)
-                fiber_portion = (food_data[6] * portion / 100) if food_data[6] else 0
-                
-                st.info(f"**{food_name}** ({portion}g)")
-                st.metric("Calorias", f"{cal_portion:.0f} kcal")
-                col1_1, col2_2 = st.columns(2)
-                col1_1.metric("Proteínas", f"{prot_portion:.1f}g")
-                col1_1.metric("Carboidratos", f"{carbs_portion:.1f}g")
-                col2_2.metric("Gorduras", f"{fat_portion:.1f}g")
-                col2_2.metric("Fibras", f"{fiber_portion:.1f}g")
-        
-        if st.button("💾 Registrar Refeição", use_container_width=True):
-            c = db.conn.cursor()
-            c.execute('''
-                INSERT INTO meals (date, meal_type, food_name, portion_g, 
-                calories, protein_g, carbs_g, fat_g, fiber_g)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (meal_date, meal_type, food_name, portion, cal_portion, 
-                 prot_portion, carbs_portion, fat_portion, fiber_portion))
-            db.conn.commit()
-            
+        if st.form_submit_button("Salvar Refeição"):
+            conn_insert = sqlite3.connect('coach_data.db')
+            c = conn_insert.cursor()
+            c.execute("""INSERT INTO nutrition 
+                         (date, meal_type, food_name, quantity, unit, calories, protein, carbs, fat)
+                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      (datetime.datetime.now().strftime('%Y-%m-%d'),
+                       meal_type, food_name, quantity, unit, calories, protein, carbs, fat))
+            conn_insert.commit()
+            conn_insert.close()
             st.success("✅ Refeição registrada!")
     
-    with tab3:
-        st.subheader("Registrar Peso")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            weight_date = st.date_input("Data", datetime.now(), key="weight_date")
-            weight = st.number_input("Peso (kg)", 70.0, 120.0, 110.0, 0.1)
-        
-        with col2:
-            body_fat = st.number_input("% Gordura Corporal (opcional)", 0.0, 50.0, 25.0, 0.1)
-            weight_notes = st.text_area("Notas", "")
-        
-        if st.button("⚖️ Registrar Peso", use_container_width=True):
-            c = db.conn.cursor()
-            c.execute('''
-                INSERT INTO weight_log (date, weight_kg, body_fat_pct, notes)
-                VALUES (?, ?, ?, ?)
-            ''', (weight_date, weight, body_fat, weight_notes))
-            db.conn.commit()
-            
-            st.success("✅ Peso registrado!")
-
-def render_analytics(db):
-    st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">📊 Análises Avançadas</h1>
-        <p class="hero-subtitle">Insights baseados em dados</p>
-    </div>
-    """, unsafe_allow_html=True)
+    # Show today's log
+    today_str = datetime.datetime.now().strftime('%Y-%m-%d')
+    today_nutrition = pd.read_sql_query(
+        f"SELECT meal_type, food_name, quantity, unit, calories, protein, carbs, fat FROM nutrition WHERE date='{today_str}'",
+        conn
+    )
+    conn.close()
     
-    # Dados de exemplo para demonstração
-    dates = pd.date_range('2026-07-01', periods=180, freq='D')
+    if not today_nutrition.empty:
+        st.markdown(f"### 📊 Resumo de Hoje - {today_str}")
+        
+        total_cal = today_nutrition['calories'].sum()
+        total_protein = today_nutrition['protein'].sum()
+        total_carbs = today_nutrition['carbs'].sum()
+        total_fat = today_nutrition['fat'].sum()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("🔥 Calorias", f"{total_cal:.0f} kcal", f"{total_cal - plan['target_calories']:.0f} do plano")
+        col2.metric("💪 Proteína", f"{total_protein:.1f}g", f"{total_protein - plan['protein_g']:.1f}g")
+        col3.metric("🌾 Carboidratos", f"{total_carbs:.1f}g", f"{total_carbs - plan['carbs_g']:.1f}g")
+        col4.metric("🧈 Gordura", f"{total_fat:.1f}g", f"{total_fat - plan['fat_g']:.1f}g")
+        
+        st.dataframe(today_nutrition[['meal_type', 'food_name', 'quantity', 'unit', 'calories']], use_container_width=True)
+
+def render_progress():
+    st.markdown('<div class="title-gradient">📈 Progresso</div>', unsafe_allow_html=True)
+    
+    conn = sqlite3.connect('coach_data.db')
+    
+    # Body metrics
+    body_df = pd.read_sql_query("SELECT date, weight_kg FROM body_metrics ORDER BY date", conn)
+    
+    # Workout stats
+    workout_df = pd.read_sql_query("SELECT date, type, duration_minutes, distance_km FROM workouts ORDER BY date", conn)
+    
+    # Nutrition stats
+    nutrition_df = pd.read_sql_query("SELECT date, calories FROM nutrition ORDER BY date", conn)
+    daily_calories = nutrition_df.groupby('date')['calories'].sum().reset_index()
+    
+    conn.close()
     
     col1, col2 = st.columns(2)
     
     with col1:
-        st.markdown("### 📈 Tendência de Peso")
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("📊 Evolução do Peso")
         
-        # Simulação de dados
-        np.random.seed(42)
-        weights = 110 - np.linspace(0, 15, 180) + np.random.normal(0, 0.5, 180)
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=dates, y=weights, mode='lines',
-                                name='Peso Real', line=dict(color='#667eea', width=2)))
-        fig.add_hline(y=78, line_dash="dash", line_color="#00C853",
-                     annotation_text="Meta: 78kg")
-        
-        fig.update_layout(
-            template='plotly_dark',
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            yaxis_title='Peso (kg)'
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        if not body_df.empty:
+            fig = px.line(body_df, x='date', y='weight_kg', 
+                         title='Evolução do Peso',
+                         labels={'weight_kg': 'Peso (kg)', 'date': 'Data'})
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                            font_color='white', xaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+                            yaxis=dict(gridcolor='rgba(255,255,255,0.1)'))
+            fig.add_hline(y=78, line_dash="dash", line_color="#ff6b6b", 
+                         annotation_text="Meta 78kg")
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Ainda não há dados de peso registrados.")
+        st.markdown('</div>', unsafe_allow_html=True)
     
     with col2:
-        st.markdown("### 🔥 Calorias Semanais")
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("🚴 Volume de Treino")
         
-        weeks = list(range(1, 27))
-        calories_burned = np.random.normal(5000, 500, 26) + np.linspace(0, 2000, 26)
-        calories_consumed = calories_burned - np.random.normal(3500, 300, 26)
+        if not workout_df.empty:
+            weekly_volume = workout_df.groupby(pd.to_datetime(workout_df['date']).dt.isocalendar().week).agg({
+                'duration_minutes': 'sum',
+                'distance_km': 'sum'
+            }).reset_index()
+            
+            fig = px.bar(weekly_volume, x='week', y='duration_minutes',
+                        title='Volume Semanal de Treino (min)',
+                        labels={'duration_minutes': 'Minutos', 'week': 'Semana'})
+            fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                            font_color='white', xaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+                            yaxis=dict(gridcolor='rgba(255,255,255,0.1)'))
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Ainda não há dados de treino registrados.")
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Nutrition summary
+    st.markdown('<div class="section-title">📊 Resumo Nutricional</div>', unsafe_allow_html=True)
+    
+    if not daily_calories.empty:
+        fig = px.line(daily_calories, x='date', y='calories',
+                     title='Ingestão Calórica Diária',
+                     labels={'calories': 'Calorias', 'date': 'Data'})
+        fig.update_layout(plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                         font_color='white', xaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
+                         yaxis=dict(gridcolor='rgba(255,255,255,0.1)'))
         
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=weeks, y=calories_burned, name='Gasto',
-                            marker_color='#FF4B4B'))
-        fig.add_trace(go.Bar(x=weeks, y=calories_consumed, name='Consumo',
-                            marker_color='#667eea'))
-        
-        fig.update_layout(
-            template='plotly_dark',
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)',
-            barmode='group'
+        plan = generate_nutrition_plan(
+            USER_PROFILE['weight'],
+            USER_PROFILE['height'],
+            USER_PROFILE['age'],
+            USER_PROFILE['target_weight'],
+            USER_PROFILE['target_date']
         )
+        fig.add_hline(y=plan['target_calories'], line_dash="dash", line_color="#00d4ff",
+                     annotation_text="Meta Diária")
         st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Ainda não há dados nutricionais registrados.")
+    
+    # Log weight
+    st.markdown('<div class="section-title">⚖️ Registrar Peso</div>', unsafe_allow_html=True)
+    
+    with st.form("weight_log"):
+        weight = st.number_input("Peso (kg)", min_value=50.0, max_value=200.0, value=float(USER_PROFILE['weight']))
+        body_fat = st.number_input("% Gordura (opcional)", min_value=0.0, max_value=50.0, value=25.0)
+        notes = st.text_area("Observações")
+        
+        if st.form_submit_button("Salvar Peso"):
+            conn = sqlite3.connect('coach_data.db')
+            c = conn.cursor()
+            c.execute("""INSERT INTO body_metrics 
+                         (date, weight_kg, body_fat, notes)
+                         VALUES (?, ?, ?, ?)""",
+                      (datetime.datetime.now().strftime('%Y-%m-%d'),
+                       weight, body_fat, notes))
+            conn.commit()
+            conn.close()
+            USER_PROFILE['weight'] = weight
+            st.success("✅ Peso registrado com sucesso!")
 
-def render_race_calendar():
+def render_coach():
+    st.markdown('<div class="title-gradient">🤖 Coach IA</div>', unsafe_allow_html=True)
+    
     st.markdown("""
-    <div class="hero-section">
-        <h1 class="hero-title">📅 Calendário de Provas</h1>
-        <p class="hero-subtitle">Preparação para competições alvo</p>
+    <div class="card">
+        <h4 style="color: #00d4ff;">💬 Assistente Virtual</h4>
+        <p style="color: #888;">Faça perguntas sobre treino, nutrição ou sobre seu progresso.</p>
     </div>
     """, unsafe_allow_html=True)
     
-    races = [
-        {
-            "date": "Outubro 2026",
-            "event": "Desafio de MTB",
-            "type": "XCM 60km",
-            "goal": "Completar em < 3h30",
-            "priority": "Média"
-        },
-        {
-            "date": "Novembro 2026",
-            "event": "Duatlo Regional",
-            "type": "5km/30km/5km",
-            "goal": "Top 50% categoria",
-            "priority": "Alta"
-        },
-        {
-            "date": "Dezembro 2026",
-            "event": "Maratona MTB Principal",
-            "type": "XCM 80km",
-            "goal": "Completar em < 4h30",
-            "priority": "Máxima"
-        }
-    ]
+    # Quick stats for context
+    plan = generate_nutrition_plan(
+        USER_PROFILE['weight'],
+        USER_PROFILE['height'],
+        USER_PROFILE['age'],
+        USER_PROFILE['target_weight'],
+        USER_PROFILE['target_date']
+    )
     
-    for race in races:
-        priority_color = {
-            "Máxima": "#FF1744",
-            "Alta": "#FF9100",
-            "Média": "#FFD700"
-        }.get(race['priority'], '#00C853')
-        
-        st.markdown(f"""
-        <div class="food-card" style="border-left: 5px solid {priority_color};">
-            <div style="display: flex; justify-content: space-between;">
-                <h3>{race['event']}</h3>
-                <span class="zone-badge" style="background-color: {priority_color}; 
-                      color: white;">{race['priority']}</span>
+    conn = sqlite3.connect('coach_data.db')
+    last_workout = pd.read_sql_query("SELECT date, type, duration_minutes, distance_km FROM workouts ORDER BY date DESC LIMIT 1", conn)
+    conn.close()
+    
+    st.markdown("""
+    <div class="card" style="background: rgba(0,212,255,0.05); border: 1px solid rgba(0,212,255,0.2);">
+        <p style="color: #00d4ff;">📌 Contexto atual:</p>
+        <ul style="color: #888; list-style: none; padding: 0;">
+            <li>• Peso: <span style="color: white;">{} kg</span> (Meta: 78kg)</li>
+            <li>• Déficit diário: <span style="color: #ff6b6b;">-{} kcal</span></li>
+            <li>• Semana de treino: <span style="color: white;">{}ª semana</span></li>
+            <li>• Último treino: {}</li>
+        </ul>
+    </div>
+    """.format(
+        USER_PROFILE['weight'],
+        int(plan['daily_deficit']),
+        ((datetime.datetime.now() - datetime.datetime(2026, 1, 1)).days // 7) + 1,
+        f"{last_workout.iloc[0]['type']} ({last_workout.iloc[0]['duration_minutes']}min)" if not last_workout.empty else "Nenhum registrado"
+    ), unsafe_allow_html=True)
+    
+    # Chat interface
+    st.markdown("### 💬 Pergunte ao Coach")
+    user_question = st.text_area("Sua pergunta:", placeholder="Ex: Como ajustar minha dieta nos dias de treino longo?")
+    
+    if st.button("Enviar Pergunta", use_container_width=True):
+        if user_question:
+            # Generate response based on keywords
+            response = generate_coach_response(user_question, plan)
+            st.markdown(f"""
+            <div class="card" style="background: rgba(123, 47, 252, 0.1); border: 1px solid rgba(123, 47, 252, 0.2);">
+                <p style="color: #00d4ff;">🤖 Coach:</p>
+                <p style="color: white;">{response}</p>
             </div>
-            <p><strong>Data:</strong> {race['date']}</p>
-            <p><strong>Tipo:</strong> {race['type']}</p>
-            <p><strong>Meta:</strong> {race['goal']}</p>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
+        else:
+            st.warning("Por favor, digite uma pergunta.")
 
+def generate_coach_response(question, plan):
+    """Simple rule-based coach responses"""
+    question_lower = question.lower()
+    
+    if any(word in question_lower for word in ['dieta', 'comer', 'alimento', 'nutrição']):
+        return f"""
+        Com base no seu perfil, sua ingestão calórica diária deve ser de {plan['target_calories']:.0f} kcal.
+        Distribuição: {plan['carbs_g']:.0f}g de carboidratos, {plan['protein_g']:.0f}g de proteína e {plan['fat_g']:.0f}g de gordura.
+        
+        💡 Dica: Em dias de treino longo, aumente os carboidratos para 4-5g/kg de peso (440-550g). Em dias de descanso, reduza para 2-3g/kg e aumente a proteína.
+        """
+    
+    elif any(word in question_lower for word in ['treino', 'bike', 'mtb', 'corrida']):
+        return """
+        Sua semana de treino deve ser periodizada:
+        • Segunda: Musculação (Força)
+        • Terça: MTB 60min (Z2) + Musculação
+        • Quarta: Corrida 45min + Musculação
+        • Quinta: MTB 70min (Z3) + Musculação
+        • Sexta: Corrida 50min + Musculação
+        • Sábado: MTB Longo (3h Z2)
+        • Domingo: Corrida Longa (2h Z2)
+        
+        💡 Lembre-se: Aumente a intensidade gradualmente, e mantenha a cadência do MTB entre 80-90 RPM.
+        """
+    
+    elif any(word in question_lower for word in ['peso', 'emagrecimento', 'perder']):
+        return f"""
+        Você está em um processo de emagrecimento com déficit de {plan['daily_deficit']:.0f} kcal/dia.
+        Para chegar em 78kg até 31/12/2026, faltam {plan['days_remaining']} dias.
+        
+        🔑 Chave: Mantenha o déficit, mas nunca abaixo de 1800kcal para sustentar seus treinos.
+        Priorize alimentos proteicos (2g/kg) e carboidratos complexos antes dos treinos.
+        """
+    
+    elif any(word in question_lower for word in ['cardio', 'fc', 'frequência', 'coração']):
+        hr_zones = calculate_hr_zones(USER_PROFILE['fc_max'])
+        response = "Suas Zonas de FC (baseado em 178bpm):\n"
+        for zone, (low, high) in hr_zones.items():
+            response += f"• {zone}: {int(low)}-{int(high)} bpm\n"
+        return response
+    
+    else:
+        return """
+        😊 Aqui estão algumas recomendações gerais para você:
+        
+        1. **Hidratação**: Beba 3-4L de água por dia, especialmente nos dias de treino.
+        2. **Recuperação**: Durma 7-9h por noite. O sono é crucial para perda de peso e performance.
+        3. **Treino**: Respeite as Zonas de FC - Z2 para treinos de resistência, Z3 para tempo, Z4 para limiar.
+        4. **Nutrição**: Priorize alimentos integrais, verduras e proteínas magras.
+        
+        Para perguntas específicas, seja mais detalhado sobre o que precisa.
+        """
+
+# ---------------- RUN APP ----------------
 if __name__ == "__main__":
     main()
