@@ -1,3178 +1,2045 @@
 """
-SPED MANAGER PRO - Sistema Corporativo Completo
-===============================================
-Sistema profissional para leitura, análise, edição, validação e exportação 
-de arquivos SPED Fiscal Brasileiro.
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║              SPED AUDITOR — FISCAL INTELLIGENCE PLATFORM                        ║
+║              Versão 1.0 | Python + Streamlit | Arquivo único                   ║
+║──────────────────────────────────────────────────────────────────────────────────║
+║  Módulos embutidos:                                                              ║
+║    • Parser SPED manual (EFD ICMS/IPI e EFD Contribuições)                      ║
+║    • Motor de regras tributárias configurável (CST × CFOP)                      ║
+║    • Validador fiscal (11 tipos de inconsistência)                               ║
+║    • Editor com trilha de auditoria imutável                                     ║
+║    • Correções em massa com prévia e desfazer                                    ║
+║    • Exportação: SPED TXT corrigido, Excel 5-abas, CSV                          ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
 
-Versão: 2.1.0 (Corrigida)
-Data: 2024
+Execução:
+    pip install streamlit pandas numpy openpyxl plotly
+    streamlit run sped_auditor.py
 """
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import re
+# ════════════════════════════════════════════════════════════════════════════════
+# IMPORTS
+# ════════════════════════════════════════════════════════════════════════════════
+
+from __future__ import annotations
+
 import io
-import os
-import sys
 import json
-import yaml
-from datetime import datetime, date
-from typing import Dict, List, Tuple, Optional, Any, Union
+import os
+import re
+import sys
+import uuid
 from dataclasses import dataclass, field, asdict
-from decimal import Decimal, ROUND_HALF_UP, ROUND_DOWN, ROUND_UP
-from enum import Enum
-import logging
-import traceback
-import hashlib
-from copy import deepcopy
-import warnings
-warnings.filterwarnings('ignore')
+from datetime import datetime
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from typing import Optional
 
-# Configuração de logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('sped_manager.log', encoding='utf-8'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+import streamlit as st
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
-# ============================================================================
-# CONSTANTES E ENUMS
-# ============================================================================
-
-class SeverityLevel(Enum):
-    """Níveis de severidade para inconsistências"""
-    CRITICA = "Crítica"
-    AVISO = "Aviso" 
-    INFORMACAO = "Informação"
-
-class OperationType(Enum):
-    """Tipos de operação fiscal"""
-    ENTRADA = "entrada"
-    SAIDA = "saida"
-    SERVICO = "servico"
-
-class TaxRegime(Enum):
-    """Regimes tributários"""
-    SIMPLES = "Simples Nacional"
-    LUCRO_PRESUMIDO = "Lucro Presumido"
-    LUCRO_REAL = "Lucro Real"
-
-# Constantes do SPED
-BLOCK_DESCRIPTIONS = {
-    '0': 'Abertura, Identificação e Referências',
-    'A': 'Documentos Fiscais - Serviços (não sujeitos ao ICMS)',
-    'B': 'Apuração do ISS',
-    'C': 'Documentos Fiscais - Mercadorias (ICMS)',
-    'D': 'Documentos Fiscais - Aquisições/Transportes',
-    'E': 'Apuração do ICMS e do ICMS-ST',
-    'F': 'Controle da Produção e do Estoque',
-    'G': 'Controle de Créditos de ICMS (CIAP)',
-    'H': 'Inventário Físico',
-    'I': 'Outras Informações',
-    'J': 'Energia Elétrica',
-    'K': 'Controle da Produção e do Estoque',
-    '1': 'Complemento da Escrituração',
-    '2': 'Controle de Valores',
-    '9': 'Controle e Encerramento do Arquivo Digital'
-}
-
-REGISTER_DESCRIPTIONS = {
-    '0000': 'Abertura do Arquivo Digital e Identificação da Entidade',
-    '0001': 'Abertura do Bloco 0',
-    '0005': 'Dados Complementares da Entidade',
-    '0015': 'Dados do Representante Legal/Contabilista',
-    '0100': 'Dados do Contabilista',
-    '0150': 'Tabela de Cadastro do Participante',
-    '0200': 'Tabela de Identificação do Item (Produtos e Serviços)',
-    '0300': 'Cadastro de Bens ou Componentes do Ativo Imobilizado',
-    '0400': 'Tabela de Natureza da Operação/ Prestação',
-    '0450': 'Tabela de Informação Complementar do Documento Fiscal',
-    '0460': 'Tabela de Observações do Lançamento Fiscal',
-    '0500': 'Plano de Contas Contábeis',
-    '0600': 'Centro de Custos',
-    'C100': 'Documento - Nota Fiscal (Código 01), Nota Fiscal Avulsa (1B), '
-             'Nota Fiscal de Produtor (04) e NF-e (55)',
-    'C110': 'Informação Complementar da Nota Fiscal',
-    'C120': 'Complemento de Documento',
-    'C130': 'ISS/IRRF/PIS/COFINS',
-    'C140': 'Fatura',
-    'C160': 'Volumes Transportados',
-    'C170': 'Itens do Documento',
-    'C190': 'Registro Analítico do Documento',
-    'C400': 'Equipamento ECF',
-    'C405': 'Redução Z',
-    'C410': 'Registro Totalizador',
-    'C420': 'Resumo por Totalizador',
-    'C425': 'Resumo de Itens do Movimento Diário',
-    'C460': 'Documento Fiscal Emitido por ECF',
-    'C470': 'Itens do Documento Fiscal Emitido por ECF',
-    'C490': 'Registro Analítico de CFOP',
-    'C500': 'Nota Fiscal/Conta de Energia Elétrica (Código 06)',
-    'C510': 'Itens da NF/Conta de Energia Elétrica',
-    'C590': 'Registro Analítico do Documento',
-    'C600': 'Consolidação Diária de Notas Fiscais/Contas de Energia',
-    'C610': 'Itens da Consolidação Diária',
-    'C690': 'Registro Analítico dos Documentos',
-    'C700': 'Consolidação dos Documentos Emitidos por ECF',
-    'C790': 'Registro Analítico dos Documentos (C700)',
-    'D100': 'Aquisição de Serviços de Transporte',
-    'D190': 'Registro Analítico dos Documentos',
-    'D500': 'Documento de Serviço de Comunicação',
-    'D590': 'Registro Analítico do Documento',
-    'E100': 'Período de Apuração',
-    'E110': 'Apuração do ICMS - Operações Próprias',
-    'E111': 'Ajuste/Benefício/Incentivo da Apuração do ICMS',
-    'E116': 'Obrigações do ICMS Recolhido ou a Recolher',
-    'E200': 'Apuração do ICMS - Substituição Tributária',
-    'H010': 'Inventário',
-    'H020': 'Informações Complementares do Inventário'
-}
-
-CST_ICMS_CODES = {
-    '000': {'description': 'Tributada integralmente', 'category': 'tributado'},
-    '010': {'description': 'Tributada e com cobrança do ICMS por ST', 'category': 'tributado'},
-    '020': {'description': 'Com redução de base de cálculo', 'category': 'tributado'},
-    '030': {'description': 'Isenta ou não tributada e com cobrança do ICMS por ST', 
-            'category': 'isento'},
-    '040': {'description': 'Isenta', 'category': 'isento'},
-    '041': {'description': 'Não tributada', 'category': 'isento'},
-    '050': {'description': 'Suspensão', 'category': 'suspenso'},
-    '051': {'description': 'Diferimento', 'category': 'diferido'},
-    '060': {'description': 'ICMS cobrado anteriormente por ST', 'category': 'substituto'},
-    '070': {'description': 'Com redução de BC e cobrança do ICMS por ST', 'category': 'tributado'},
-    '090': {'description': 'Outras', 'category': 'outros'},
-}
-
-# ============================================================================
-# CLASSES DE DADOS (DATACLASSES)
-# ============================================================================
-
-@dataclass
-class AuditEntry:
-    """Registro de auditoria para cada alteração"""
-    timestamp: datetime
-    user: str
-    action: str
-    block: str
-    registry: str
-    field: str
-    old_value: Any
-    new_value: Any
-    reason: str
-    rule_applied: Optional[str] = None
-    document_id: Optional[str] = None
-    item_id: Optional[str] = None
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
-    
-    def __str__(self) -> str:
-        return (f"[{self.timestamp}] {self.user} - {self.action}: "
-                f"{self.block}/{self.registry}/{self.field} "
-                f"'{self.old_value}' -> '{self.new_value}'")
-
-@dataclass
-class TaxRule:
-    """Regra tributária configurável"""
-    rule_id: str
-    cst: str
-    cfop_pattern: str
-    operation_type: OperationType
-    requires_base: bool = True
-    requires_aliquot: bool = True
-    requires_tax_value: bool = True
-    base_calculation_source: str = 'item_value'
-    default_aliquot: Optional[float] = None
-    calculation_formula: str = 'base * aliquot / 100'
-    rounding_method: str = 'ROUND_HALF_UP'
-    decimal_places: int = 2
-    is_active: bool = True
-    description: str = ''
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
-    
-    @classmethod
-    def from_dict(cls, data: Dict) -> 'TaxRule':
-        if 'operation_type' in data and isinstance(data['operation_type'], str):
-            data['operation_type'] = OperationType(data['operation_type'])
-        return cls(**data)
-
-@dataclass
-class Inconsistency:
-    """Inconsistência fiscal detectada"""
-    id: str
-    severity: SeverityLevel
-    block: str
-    registry: str
-    field: str
-    description: str
-    current_value: Any
-    expected_value: Optional[Any]
-    cst: Optional[str] = None
-    cfop: Optional[str] = None
-    document_number: Optional[str] = None
-    item_number: Optional[str] = None
-    rule_reference: Optional[str] = None
-    can_auto_correct: bool = False
-    suggested_correction: Optional[Any] = None
-    
-    def to_dict(self) -> Dict:
-        return asdict(self)
-
-# ============================================================================
-# PARSER SPED - Motor de Leitura e Estruturação
-# ============================================================================
-
-class SPEDParser:
-    """
-    Parser profissional para arquivos SPED Fiscal
-    Suporte a EFD ICMS/IPI e EFD Contribuições
-    """
-    
-    def __init__(self):
-        self.raw_content = ''
-        self.encoding = 'utf-8'
-        self.sped_type = ''
-        self.metadata = {}
-        self.blocks = {}
-        self.blocks_dataframes = {}
-        self.all_records = []
-        self.parser_log = []
-        
-    def parse_file(self, uploaded_file) -> Dict[str, Any]:
-        """
-        Processa arquivo SPED completo
-        
-        Args:
-            uploaded_file: Arquivo enviado (BytesIO ou similar)
-            
-        Returns:
-            Dict com resultado do parsing
-        """
-        try:
-            start_time = datetime.now()
-            
-            # Ler conteúdo bruto
-            raw_bytes = uploaded_file.read()
-            
-            # Detectar encoding
-            self._detect_encoding(raw_bytes)
-            
-            # Decodificar
-            try:
-                self.raw_content = raw_bytes.decode(self.encoding)
-            except:
-                self.encoding = 'latin-1'
-                self.raw_content = raw_bytes.decode(self.encoding)
-            
-            # Normalizar linhas
-            lines = self.raw_content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
-            lines = [line.strip() for line in lines if line.strip()]
-            
-            # Identificar tipo SPED
-            self.sped_type = self._identify_sped_type(lines)
-            
-            if not self.sped_type:
-                return {'success': False, 'error': 'Tipo de arquivo SPED não identificado'}
-            
-            # Extrair metadados
-            self.metadata = self._extract_metadata(lines)
-            
-            # Parsear blocos e registros
-            self._parse_blocks(lines)
-            
-            # Converter para DataFrames
-            self._create_dataframes()
-            
-            # Log do parsing
-            elapsed = (datetime.now() - start_time).total_seconds()
-            logger.info(f"Arquivo processado em {elapsed:.2f}s - {len(lines)} linhas")
-            
-            return {
-                'success': True,
-                'data': self.raw_content,
-                'sped_type': self.sped_type,
-                'metadata': self.metadata,
-                'blocks': self.blocks_dataframes,
-                'blocks_raw': self.blocks,
-                'stats': {
-                    'total_lines': len(lines),
-                    'total_records': len(self.all_records),
-                    'blocks_found': list(self.blocks.keys()),
-                    'parse_time': elapsed
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Erro no parsing: {str(e)}", exc_info=True)
-            return {'success': False, 'error': str(e)}
-    
-    def _detect_encoding(self, raw_bytes: bytes):
-        """Detecta encoding do arquivo"""
-        # Tentar UTF-8 primeiro
-        try:
-            raw_bytes.decode('utf-8')
-            self.encoding = 'utf-8'
-            return
-        except:
-            pass
-        
-        # Tentar latin-1
-        try:
-            raw_bytes.decode('latin-1')
-            self.encoding = 'latin-1'
-            return
-        except:
-            pass
-        
-        # Tentar cp1252 (Windows)
-        try:
-            raw_bytes.decode('cp1252')
-            self.encoding = 'cp1252'
-            return
-        except:
-            pass
-        
-        # Default
-        self.encoding = 'latin-1'
-    
-    def _identify_sped_type(self, lines: List[str]) -> str:
-        """Identifica o tipo de arquivo SPED"""
-        for line in lines[:100]:
-            parts = line.split('|')
-            if len(parts) < 3:
-                continue
-            
-            if parts[0] == '':
-                parts = parts[1:]
-            
-            if len(parts) < 2:
-                continue
-            
-            register = parts[1] if len(parts) > 1 else ''
-            
-            if register == '0000':
-                if len(parts) > 6:
-                    cod_fin = parts[5] if len(parts) > 5 else ''
-                    if cod_fin in ['1', '2']:
-                        return 'EFD ICMS/IPI'
-                
-                if len(parts) > 7:
-                    nome = parts[7] if len(parts) > 7 else ''
-                    if 'CONTRIBUIÇÕES' in line.upper() or 'CONTRIBUICOES' in line.upper():
-                        return 'EFD Contribuições'
-                
-                return 'EFD ICMS/IPI'
-        
-        return 'EFD ICMS/IPI'
-    
-    def _extract_metadata(self, lines: List[str]) -> Dict[str, Any]:
-        """Extrai metadados do arquivo SPED"""
-        metadata = {
-            'cnpj': '',
-            'ie': '',
-            'nome': '',
-            'periodo_inicial': '',
-            'periodo_final': '',
-            'cod_versao': '',
-            'cod_finalidade': '',
-            'uf': '',
-            'cod_municipio': '',
-            'insc_municipal': '',
-            'ind_perfil': '',
-            'ind_atividade': '',
-            'total_registros': 0,
-            'total_blocos': 0
-        }
-        
-        for line in lines:
-            parts = line.split('|')
-            if len(parts) < 3:
-                continue
-            
-            if parts[0] == '':
-                parts = parts[1:]
-            
-            if len(parts) < 2:
-                continue
-            
-            register = parts[1]
-            
-            if register == '0000':
-                metadata['cod_versao'] = parts[3] if len(parts) > 3 else ''
-                metadata['cod_finalidade'] = parts[4] if len(parts) > 4 else ''
-                metadata['periodo_inicial'] = parts[5] if len(parts) > 5 else ''
-                metadata['periodo_final'] = parts[6] if len(parts) > 6 else ''
-                metadata['nome'] = parts[7] if len(parts) > 7 else ''
-                metadata['cnpj'] = parts[8] if len(parts) > 8 else ''
-                metadata['uf'] = parts[10] if len(parts) > 10 else ''
-                metadata['ie'] = parts[11] if len(parts) > 11 else ''
-                metadata['cod_municipio'] = parts[12] if len(parts) > 12 else ''
-                metadata['insc_municipal'] = parts[13] if len(parts) > 13 else ''
-                metadata['ind_perfil'] = parts[15] if len(parts) > 15 else ''
-                metadata['ind_atividade'] = parts[16] if len(parts) > 16 else ''
-            
-            elif register == '0001':
-                metadata['ind_movimento'] = parts[3] if len(parts) > 3 else ''
-        
-        return metadata
-    
-    def _parse_blocks(self, lines: List[str]):
-        """Parseia blocos e registros do SPED"""
-        self.blocks = {}
-        self.all_records = []
-        current_block = None
-        block_registers = []
-        record_count = 0
-        
-        for line_num, line in enumerate(lines, 1):
-            parts = line.split('|')
-            if len(parts) < 3:
-                continue
-            
-            if parts[0] == '':
-                parts = parts[1:]
-            
-            if len(parts) < 2:
-                continue
-            
-            register = parts[1]
-            
-            block = self._get_block_from_register(register)
-            
-            if block:
-                if block != current_block:
-                    if current_block and block_registers:
-                        self.blocks[current_block] = block_registers
-                    
-                    current_block = block
-                    block_registers = []
-                
-                record = {
-                    'line_number': line_num,
-                    'block': block,
-                    'register': register,
-                    'original_line': line,
-                    'fields': parts[2:] if len(parts) > 2 else []
-                }
-                
-                field_names = self._get_field_names(register)
-                for i, value in enumerate(record['fields']):
-                    if i < len(field_names):
-                        record[field_names[i]] = value
-                
-                block_registers.append(record)
-                self.all_records.append(record)
-                record_count += 1
-        
-        if current_block and block_registers:
-            self.blocks[current_block] = block_registers
-        
-        self.metadata['total_registros'] = record_count
-        self.metadata['total_blocos'] = len(self.blocks)
-    
-    def _get_block_from_register(self, register: str) -> str:
-        """Determina o bloco baseado no registro"""
-        if not register:
-            return ''
-        
-        first_char = register[0].upper()
-        
-        if register.startswith('0'):
-            return '0'
-        elif first_char == 'C':
-            return 'C'
-        elif first_char == 'D':
-            return 'D'
-        elif first_char == 'E':
-            return 'E'
-        elif first_char == 'H':
-            return 'H'
-        elif register.startswith('1'):
-            return '1'
-        elif register.startswith('9'):
-            return '9'
-        elif first_char == 'A':
-            return 'A'
-        elif first_char == 'B':
-            return 'B'
-        elif first_char == 'G':
-            return 'G'
-        else:
-            return 'OTHERS'
-    
-    def _get_field_names(self, register: str) -> List[str]:
-        """Retorna nomes dos campos para registros conhecidos"""
-        field_maps = {
-            '0000': ['REG', 'COD_VER', 'COD_FIN', 'DT_INI', 'DT_FIN', 'NOME', 'CNPJ', 
-                     'CPF', 'UF', 'IE', 'COD_MUN', 'IM', 'SUFRAMA', 'IND_PERFIL', 'IND_ATIV'],
-            '0001': ['REG', 'IND_MOV'],
-            '0150': ['REG', 'COD_PART', 'NOME', 'COD_PAIS', 'CNPJ', 'CPF', 'IE', 
-                     'COD_MUN', 'SUFRAMA', 'END', 'NUM', 'COMPL', 'BAIRRO'],
-            '0200': ['REG', 'COD_ITEM', 'DESCR_ITEM', 'COD_BARRA', 'COD_ANT_ITEM',
-                     'UNID_INV', 'TIPO_ITEM', 'COD_NCM', 'EX_IPI', 'COD_GEN', 'COD_LST', 'ALIQ_ICMS'],
-            '0400': ['REG', 'COD_NAT', 'DESCR_NAT'],
-            '0450': ['REG', 'COD_INF', 'TXT'],
-            '0460': ['REG', 'COD_OBS', 'TXT'],
-            'C100': ['REG', 'IND_OPER', 'IND_EMIT', 'COD_PART', 'COD_MOD', 'COD_SIT', 
-                     'SER', 'NUM_DOC', 'CHV_NFE', 'DT_DOC', 'DT_E_S', 'VL_DOC', 
-                     'IND_PGTO', 'VL_DESC', 'VL_ABAT_NT', 'VL_MERC', 'IND_FRT', 
-                     'VL_FRT', 'VL_SEG', 'VL_OUT_DA', 'VL_BC_ICMS', 'VL_ICMS', 
-                     'VL_BC_ICMS_ST', 'VL_ICMS_ST', 'VL_IPI', 'VL_PIS', 'VL_COFINS', 
-                     'VL_PIS_ST', 'VL_COFINS_ST'],
-            'C170': ['REG', 'NUM_ITEM', 'COD_ITEM', 'DESCR_COMPL', 'QTD', 'UNID', 
-                     'VL_ITEM', 'VL_DESC', 'IND_MOV', 'CST_ICMS', 'CFOP', 'COD_NAT', 
-                     'VL_BC_ICMS', 'ALIQ_ICMS', 'VL_ICMS', 'VL_BC_ICMS_ST', 'ALIQ_ST', 
-                     'VL_ICMS_ST', 'IND_APUR', 'CST_IPI', 'COD_ENQ', 'VL_BC_IPI', 
-                     'ALIQ_IPI', 'VL_IPI', 'CST_PIS', 'VL_BC_PIS', 'ALIQ_PIS', 
-                     'QUANT_BC_PIS', 'VL_PIS', 'CST_COFINS', 'VL_BC_COFINS', 
-                     'ALIQ_COFINS', 'QUANT_BC_COFINS', 'VL_COFINS', 'COD_CTA'],
-            'C190': ['REG', 'CST_ICMS', 'CFOP', 'ALIQ_ICMS', 'VL_OPR', 'VL_BC_ICMS', 
-                     'VL_ICMS', 'VL_BC_ICMS_ST', 'VL_ICMS_ST', 'VL_RED_BC', 'COD_OBS'],
-            'C400': ['REG', 'COD_MOD', 'ECF_MOD', 'ECF_FAB', 'ECF_CX'],
-            'C405': ['REG', 'DT_DOC', 'CRO', 'CRZ', 'NUM_COO_FIN', 'GT_FIN', 'VL_BRT'],
-            'D100': ['REG', 'IND_OPER', 'IND_EMIT', 'COD_PART', 'COD_MOD', 'COD_SIT', 
-                     'SER', 'SUB', 'NUM_DOC', 'CHV_CTE', 'DT_DOC', 'DT_A_P', 'TP_CTE',
-                     'CHV_CTE_REF', 'VL_DOC', 'VL_DESC', 'IND_FRT', 'VL_SERV', 
-                     'VL_BC_ICMS', 'VL_ICMS', 'VL_NT', 'COD_INF', 'COD_CTA'],
-            'D190': ['REG', 'CST_ICMS', 'CFOP', 'ALIQ_ICMS', 'VL_OPR', 'VL_BC_ICMS',
-                     'VL_ICMS', 'VL_RED_BC', 'COD_OBS'],
-            'E100': ['REG', 'DT_INI', 'DT_FIN'],
-            'E110': ['REG', 'VL_TOT_DEBITOS', 'VL_AJ_DEBITOS', 'VL_TOT_AJ_DEBITOS',
-                     'VL_ESTORNOS_CRED', 'VL_TOT_CREDITOS', 'VL_AJ_CREDITOS', 
-                     'VL_TOT_AJ_CREDITOS', 'VL_ESTORNOS_DEB', 'VL_SLD_CREDOR_ANT',
-                     'VL_SLD_APURADO', 'VL_TOT_DED', 'VL_ICMS_RECOLHER', 
-                     'VL_SLD_CREDOR_TRANSPORTAR', 'DEB_ESP'],
-            'H010': ['REG', 'COD_ITEM', 'UNID', 'QTD', 'VL_UNIT', 'VL_ITEM', 'IND_PROP',
-                     'COD_PART', 'TXT_COMPL', 'COD_CTA', 'VL_ITEM_IR'],
-        }
-        
-        return field_maps.get(register, [f'F{i}' for i in range(1, 30)])
-    
-    def _create_dataframes(self):
-        """Cria DataFrames estruturados por bloco"""
-        self.blocks_dataframes = {}
-        
-        for block_id, records in self.blocks.items():
-            if not records:
-                continue
-            
-            df = pd.DataFrame(records)
-            self.blocks_dataframes[block_id] = df
-            
-            if 'line_number' in df.columns:
-                df.sort_values('line_number', inplace=True)
-            
-            self._convert_numeric_fields(df)
-    
-    def _convert_numeric_fields(self, df: pd.DataFrame):
-        """Converte campos numéricos para tipo Decimal/float"""
-        numeric_patterns = ['VL_', 'ALIQ_', 'QTD', 'PER_', 'VAL_', 'TOT_', 'SALDO_']
-        
-        for col in df.columns:
-            if any(pattern in col for pattern in numeric_patterns):
-                try:
-                    if df[col].dtype == object:
-                        df[col] = df[col].str.replace(',', '.')
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-                except:
-                    pass
-    
-    def get_register_dataframe(self, register_id: str) -> pd.DataFrame:
-        """Retorna DataFrame filtrado por tipo de registro"""
-        all_dfs = []
-        
-        for block_id, df in self.blocks_dataframes.items():
-            if 'register' in df.columns:
-                filtered = df[df['register'] == register_id]
-                if not filtered.empty:
-                    all_dfs.append(filtered)
-        
-        if all_dfs:
-            return pd.concat(all_dfs, ignore_index=True)
-        return pd.DataFrame()
-
-# ============================================================================
-# VALIDADOR FISCAL - Motor de Validação Tributária
-# ============================================================================
-
-class FiscalValidator:
-    """
-    Validador fiscal inteligente
-    Detecta inconsistências baseadas em regras tributárias
-    """
-    
-    def __init__(self, rules_config: Dict[str, Any]):
-        self.rules_config = rules_config
-        self.inconsistencies: List[Inconsistency] = []
-        self.inconsistency_counter = 0
-        
-    def validate(self, blocks_data: Dict[str, pd.DataFrame]) -> List[Inconsistency]:
-        """
-        Executa validação fiscal completa
-        
-        Args:
-            blocks_data: DataFrames por bloco
-            
-        Returns:
-            Lista de inconsistências encontradas
-        """
-        self.inconsistencies = []
-        self.inconsistency_counter = 0
-        
-        # Validar bloco C (Documentos Fiscais ICMS)
-        if 'C' in blocks_data and blocks_data['C'] is not None and not blocks_data['C'].empty:
-            try:
-                self._validate_c_block(blocks_data['C'])
-            except Exception as e:
-                logger.warning(f"Erro na validação do bloco C: {e}")
-                self._add_inconsistency(
-                    severity=SeverityLevel.INFORMACAO,
-                    block='C', 
-                    registry='SISTEMA',
-                    field='VALIDACAO',
-                    description=f'Erro na validação do bloco C: {str(e)}',
-                    current_value='Erro',
-                    expected_value='OK'
-                )
-        
-        # Validar bloco D (Documentos de Transporte/Serviços)
-        if 'D' in blocks_data and blocks_data['D'] is not None and not blocks_data['D'].empty:
-            try:
-                self._validate_d_block(blocks_data['D'])
-            except Exception as e:
-                logger.warning(f"Erro na validação do bloco D: {e}")
-        
-        # Validar bloco E (Apuração)
-        if 'E' in blocks_data and blocks_data['E'] is not None and not blocks_data['E'].empty:
-            try:
-                self._validate_e_block(blocks_data['E'])
-            except Exception as e:
-                logger.warning(f"Erro na validação do bloco E: {e}")
-        
-        # Validações inter-blocos
-        try:
-            self._validate_cross_blocks(blocks_data)
-        except Exception as e:
-            logger.warning(f"Erro na validação entre blocos: {e}")
-        
-        return self.inconsistencies
-    
-    def _validate_c_block(self, df: pd.DataFrame):
-        """Validações completas do bloco C"""
-        if df.empty:
-            return
-        
-        if 'register' not in df.columns:
-            return
-        
-        c100_df = df[df['register'] == 'C100'] if 'register' in df.columns else pd.DataFrame()
-        c170_df = df[df['register'] == 'C170'] if 'register' in df.columns else pd.DataFrame()
-        c190_df = df[df['register'] == 'C190'] if 'register' in df.columns else pd.DataFrame()
-        
-        if not c170_df.empty:
-            try:
-                self._validate_c170_items(c170_df)
-            except Exception as e:
-                logger.warning(f"Erro na validação C170: {e}")
-        
-        if not c100_df.empty:
-            try:
-                self._validate_c100_documents(c100_df)
-            except Exception as e:
-                logger.warning(f"Erro na validação C100: {e}")
-        
-        if not c190_df.empty:
-            try:
-                self._validate_c190_analytical(c190_df)
-            except Exception as e:
-                logger.warning(f"Erro na validação C190: {e}")
-        
-        if not c100_df.empty and not c170_df.empty:
-            try:
-                self._validate_c100_c170_consistency(c100_df, c170_df)
-            except Exception as e:
-                logger.warning(f"Erro na validação C100/C170: {e}")
-        
-        if not c170_df.empty and not c190_df.empty:
-            try:
-                self._validate_c170_c190_consistency(c170_df, c190_df)
-            except Exception as e:
-                logger.warning(f"Erro na validação C170/C190: {e}")
-    
-    def _validate_c170_items(self, df: pd.DataFrame):
-        """Validação detalhada dos itens C170"""
-        if df.empty:
-            return
-        
-        for idx, row in df.iterrows():
-            try:
-                cst = self._safe_str(row.get('CST_ICMS', ''))
-                cfop = self._safe_str(row.get('CFOP', ''))
-                vl_bc = self._safe_decimal(row.get('VL_BC_ICMS'))
-                aliq = self._safe_decimal(row.get('ALIQ_ICMS'))
-                vl_icms = self._safe_decimal(row.get('VL_ICMS'))
-                vl_item = self._safe_decimal(row.get('VL_ITEM'))
-                num_item = self._safe_str(row.get('NUM_ITEM', ''))
-                cod_item = self._safe_str(row.get('COD_ITEM', ''))
-                
-                cst_info = CST_ICMS_CODES.get(cst, {})
-                category = cst_info.get('category', '')
-                
-                if category == 'tributado':
-                    if vl_bc is None or vl_bc == 0:
-                        self._add_inconsistency(
-                            severity=SeverityLevel.CRITICA,
-                            block='C', registry='C170', field='VL_BC_ICMS',
-                            description=f'Item com CST {cst} ({cst_info.get("description", "")}) '
-                                      f'sem base de cálculo',
-                            current_value=vl_bc if vl_bc else 0,
-                            expected_value='> 0',
-                            cst=cst, cfop=cfop, item_number=num_item,
-                            can_auto_correct=True,
-                            suggested_correction=vl_item if vl_item else 0
-                        )
-                    
-                    if aliq is None or aliq == 0:
-                        default_aliquot = self._get_default_aliquot(cst, cfop)
-                        self._add_inconsistency(
-                            severity=SeverityLevel.CRITICA,
-                            block='C', registry='C170', field='ALIQ_ICMS',
-                            description=f'Item com CST {cst} sem alíquota',
-                            current_value=0,
-                            expected_value=default_aliquot,
-                            cst=cst, cfop=cfop, item_number=num_item,
-                            can_auto_correct=True,
-                            suggested_correction=default_aliquot
-                        )
-                    
-                    if vl_icms is None or vl_icms == 0:
-                        if vl_bc and vl_bc > 0 and aliq and aliq > 0:
-                            expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
-                        else:
-                            expected_icms = Decimal('0')
-                        
-                        self._add_inconsistency(
-                            severity=SeverityLevel.CRITICA,
-                            block='C', registry='C170', field='VL_ICMS',
-                            description=f'Item com CST {cst} sem valor do imposto',
-                            current_value=0,
-                            expected_value=str(expected_icms),
-                            cst=cst, cfop=cfop, item_number=num_item,
-                            can_auto_correct=True,
-                            suggested_correction=str(expected_icms)
-                        )
-                
-                elif category in ['isento', 'suspenso', 'diferido']:
-                    if vl_icms and vl_icms > 0:
-                        self._add_inconsistency(
-                            severity=SeverityLevel.AVISO,
-                            block='C', registry='C170', field='VL_ICMS',
-                            description=f'Item com CST {cst} ({cst_info.get("description", "")}) '
-                                      f'com valor de imposto indevido',
-                            current_value=str(vl_icms),
-                            expected_value='0',
-                            cst=cst, cfop=cfop, item_number=num_item
-                        )
-                
-                if vl_bc and vl_bc > 0 and aliq and aliq > 0 and vl_icms and vl_icms > 0:
-                    expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
-                    diff = abs(vl_icms - expected_icms)
-                    
-                    if diff > Decimal('0.05'):
-                        self._add_inconsistency(
-                            severity=SeverityLevel.AVISO,
-                            block='C', registry='C170', field='VL_ICMS',
-                            description=f'Divergência no cálculo: {vl_bc} * {aliq}% = {expected_icms}, '
-                                      f'mas registrado {vl_icms} (dif: {diff})',
-                            current_value=str(vl_icms),
-                            expected_value=str(expected_icms),
-                            cst=cst, cfop=cfop, item_number=num_item,
-                            can_auto_correct=True,
-                            suggested_correction=str(expected_icms)
-                        )
-                
-                if not cst:
-                    self._add_inconsistency(
-                        severity=SeverityLevel.CRITICA,
-                        block='C', registry='C170', field='CST_ICMS',
-                        description='CST ICMS obrigatório não informado',
-                        current_value='Vazio', expected_value='CST válido',
-                        item_number=num_item
-                    )
-                
-                if not cfop:
-                    self._add_inconsistency(
-                        severity=SeverityLevel.CRITICA,
-                        block='C', registry='C170', field='CFOP',
-                        description='CFOP obrigatório não informado',
-                        current_value='Vazio', expected_value='CFOP válido',
-                        item_number=num_item
-                    )
-            except Exception as e:
-                logger.warning(f"Erro ao validar item C170 na linha {idx}: {e}")
-                continue
-    
-    def _validate_c100_documents(self, df: pd.DataFrame):
-        """Valida documentos C100"""
-        if df.empty:
-            return
-        
-        for idx, row in df.iterrows():
-            try:
-                vl_doc = self._safe_decimal(row.get('VL_DOC'))
-                vl_icms = self._safe_decimal(row.get('VL_ICMS'))
-                vl_bc_icms = self._safe_decimal(row.get('VL_BC_ICMS'))
-                num_doc = self._safe_str(row.get('NUM_DOC', ''))
-                
-                if vl_doc and vl_icms and vl_icms > vl_doc:
-                    self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='C', registry='C100', field='VL_ICMS',
-                        description=f'ICMS ({vl_icms}) maior que valor do documento ({vl_doc})',
-                        current_value=str(vl_icms),
-                        expected_value=f'≤ {vl_doc}',
-                        document_number=num_doc
-                    )
-                
-                if vl_doc and vl_bc_icms and vl_bc_icms > vl_doc:
-                    self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='C', registry='C100', field='VL_BC_ICMS',
-                        description=f'Base de cálculo ({vl_bc_icms}) maior que valor do documento ({vl_doc})',
-                        current_value=str(vl_bc_icms),
-                        expected_value=f'≤ {vl_doc}',
-                        document_number=num_doc
-                    )
-            except Exception as e:
-                logger.warning(f"Erro ao validar documento C100 na linha {idx}: {e}")
-                continue
-    
-    def _validate_c190_analytical(self, df: pd.DataFrame):
-        """Valida registros analíticos C190"""
-        if df.empty:
-            return
-        
-        for idx, row in df.iterrows():
-            try:
-                cst = self._safe_str(row.get('CST_ICMS', ''))
-                cfop = self._safe_str(row.get('CFOP', ''))
-                aliq = self._safe_decimal(row.get('ALIQ_ICMS'))
-                vl_opr = self._safe_decimal(row.get('VL_OPR'))
-                vl_bc = self._safe_decimal(row.get('VL_BC_ICMS'))
-                vl_icms = self._safe_decimal(row.get('VL_ICMS'))
-                
-                if vl_bc and aliq and vl_icms:
-                    expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
-                    diff = abs(vl_icms - expected_icms)
-                    
-                    if diff > Decimal('0.05'):
-                        self._add_inconsistency(
-                            severity=SeverityLevel.AVISO,
-                            block='C', registry='C190', field='VL_ICMS',
-                            description=f'Divergência analítica: {vl_bc} * {aliq}% = {expected_icms}, '
-                                      f'registrado {vl_icms}',
-                            current_value=str(vl_icms),
-                            expected_value=str(expected_icms),
-                            cst=cst, cfop=cfop
-                        )
-            except Exception as e:
-                logger.warning(f"Erro ao validar C190 na linha {idx}: {e}")
-                continue
-    
-    def _validate_c100_c170_consistency(self, c100_df: pd.DataFrame, c170_df: pd.DataFrame):
-        """
-        Valida consistência entre totais do documento (C100) e soma dos itens (C170)
-        """
-        try:
-            if c100_df.empty or c170_df.empty:
-                return
-            
-            # Verificar se as colunas necessárias existem
-            required_cols = ['VL_ICMS', 'VL_BC_ICMS', 'VL_ITEM']
-            existing_cols = [col for col in required_cols if col in c170_df.columns]
-            
-            if not existing_cols:
-                return
-            
-            # Criar coluna line_number se não existir
-            if 'line_number' not in c170_df.columns:
-                if c170_df.index.name is None:
-                    c170_df = c170_df.reset_index(drop=True)
-                    c170_df['line_number'] = c170_df.index + 1
-                else:
-                    c170_df['line_number'] = c170_df.index
-            
-            # Criar dicionário de agregação apenas com colunas existentes
-            agg_dict = {col: 'sum' for col in existing_cols}
-            
-            try:
-                c170_grouped = c170_df.groupby('line_number').agg(agg_dict).reset_index()
-            except Exception:
-                # Fallback: agregar tudo sem groupby
-                c170_grouped = c170_df.agg({col: 'sum' for col in existing_cols}).to_frame().T
-                c170_grouped['line_number'] = 1
-            
-            if c170_grouped.empty:
-                return
-            
-            # Verificar total ICMS
-            if 'VL_ICMS' in c100_df.columns and 'VL_ICMS' in c170_grouped.columns:
-                try:
-                    total_c100_icms = c100_df['VL_ICMS'].sum() if 'VL_ICMS' in c100_df.columns else 0
-                    total_c170_icms = c170_grouped['VL_ICMS'].sum() if 'VL_ICMS' in c170_grouped.columns else 0
-                    
-                    if total_c100_icms and total_c170_icms:
-                        diff = abs(Decimal(str(total_c100_icms)) - Decimal(str(total_c170_icms)))
-                        if diff > Decimal('1.00'):
-                            self._add_inconsistency(
-                                severity=SeverityLevel.AVISO,
-                                block='C', 
-                                registry='C100/C170',
-                                field='VL_ICMS',
-                                description=f'Total ICMS nos documentos ({total_c100_icms:.2f}) '
-                                          f'difere da soma dos itens ({total_c170_icms:.2f})',
-                                current_value=str(total_c100_icms),
-                                expected_value=str(total_c170_icms)
-                            )
-                except Exception as e:
-                    logger.warning(f"Erro ao comparar ICMS total: {e}")
-                    
-        except Exception as e:
-            logger.warning(f"Erro na validação C100/C170: {e}")
-    
-    def _validate_c170_c190_consistency(self, c170_df: pd.DataFrame, c190_df: pd.DataFrame):
-        """Valida consistência entre itens e registro analítico"""
-        try:
-            if c170_df.empty or c190_df.empty:
-                return
-            
-            required_cols = ['CST_ICMS', 'CFOP', 'VL_BC_ICMS', 'VL_ICMS']
-            
-            c170_has = all(col in c170_df.columns for col in required_cols)
-            c190_has = all(col in c190_df.columns for col in required_cols)
-            
-            if not c170_has or not c190_has:
-                return
-            
-            try:
-                c170_agg = c170_df.groupby(['CST_ICMS', 'CFOP']).agg({
-                    'VL_BC_ICMS': 'sum',
-                    'VL_ICMS': 'sum'
-                }).reset_index()
-            except Exception:
-                return
-            
-            try:
-                c190_agg = c190_df.groupby(['CST_ICMS', 'CFOP']).agg({
-                    'VL_BC_ICMS': 'sum',
-                    'VL_ICMS': 'sum'
-                }).reset_index()
-            except Exception:
-                return
-            
-            for _, c170_row in c170_agg.iterrows():
-                try:
-                    cst = c170_row['CST_ICMS']
-                    cfop = c170_row['CFOP']
-                    
-                    c190_match = c190_agg[
-                        (c190_agg['CST_ICMS'] == cst) & 
-                        (c190_agg['CFOP'] == cfop)
-                    ]
-                    
-                    if not c190_match.empty:
-                        c190_row = c190_match.iloc[0]
-                        
-                        icms_170 = Decimal(str(c170_row['VL_ICMS']))
-                        icms_190 = Decimal(str(c190_row['VL_ICMS']))
-                        diff = abs(icms_170 - icms_190)
-                        
-                        if diff > Decimal('0.10'):
-                            self._add_inconsistency(
-                                severity=SeverityLevel.AVISO,
-                                block='C', registry='C170/C190',
-                                field='VL_ICMS',
-                                description=f'ICMS diverge entre itens ({icms_170}) e analítico ({icms_190}) '
-                                          f'para CST {cst} / CFOP {cfop}',
-                                current_value=str(icms_170),
-                                expected_value=str(icms_190),
-                                cst=cst, cfop=cfop
-                            )
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.warning(f"Erro na validação C170/C190: {e}")
-    
-    def _validate_d_block(self, df: pd.DataFrame):
-        """Validações do bloco D"""
-        pass
-    
-    def _validate_e_block(self, df: pd.DataFrame):
-        """Validações do bloco E (Apuração)"""
-        if df.empty:
-            return
-        
-        if 'register' not in df.columns:
-            return
-        
-        e110_df = df[df['register'] == 'E110'] if 'register' in df.columns else pd.DataFrame()
-        
-        for idx, row in e110_df.iterrows():
-            try:
-                vl_debitos = self._safe_decimal(row.get('VL_TOT_DEBITOS'))
-                vl_creditos = self._safe_decimal(row.get('VL_TOT_CREDITOS'))
-                vl_saldo = self._safe_decimal(row.get('VL_SLD_APURADO'))
-                
-                if vl_debitos is not None and vl_creditos is not None and vl_saldo is not None:
-                    expected = vl_debitos - vl_creditos
-                    diff = abs(vl_saldo - expected)
-                    
-                    if diff > Decimal('0.02'):
-                        self._add_inconsistency(
-                            severity=SeverityLevel.AVISO,
-                            block='E', registry='E110', field='VL_SLD_APURADO',
-                            description=f'Saldo apurado ({vl_saldo}) difere do cálculo '
-                                      f'{vl_debitos} - {vl_creditos} = {expected}',
-                            current_value=str(vl_saldo),
-                            expected_value=str(expected)
-                        )
-            except Exception as e:
-                logger.warning(f"Erro ao validar E110: {e}")
-                continue
-    
-    def _validate_cross_blocks(self, blocks_data: Dict[str, pd.DataFrame]):
-        """Validações entre blocos diferentes"""
-        try:
-            if 'C' in blocks_data and 'E' in blocks_data:
-                c_df = blocks_data['C']
-                e_df = blocks_data['E']
-                
-                if not c_df.empty and not e_df.empty:
-                    if 'VL_ICMS' in c_df.columns and 'register' in e_df.columns:
-                        total_icms_c = c_df['VL_ICMS'].sum() if 'VL_ICMS' in c_df.columns else 0
-                        
-                        e110_df = e_df[e_df['register'] == 'E110'] if 'register' in e_df.columns else pd.DataFrame()
-                        if not e110_df.empty and 'VL_TOT_DEBITOS' in e110_df.columns:
-                            total_debitos_e = e110_df['VL_TOT_DEBITOS'].sum()
-                            
-                            if total_icms_c and total_debitos_e:
-                                diff = abs(Decimal(str(total_icms_c)) - Decimal(str(total_debitos_e)))
-                                if diff > Decimal('10.00'):
-                                    self._add_inconsistency(
-                                        severity=SeverityLevel.AVISO,
-                                        block='C/E', registry='C100/E110',
-                                        field='VL_ICMS/VL_TOT_DEBITOS',
-                                        description=f'Total ICMS documentos ({total_icms_c:.2f}) '
-                                                  f'difere do total débitos apuração ({total_debitos_e:.2f})',
-                                        current_value=str(total_icms_c),
-                                        expected_value=str(total_debitos_e)
-                                    )
-        except Exception as e:
-            logger.warning(f"Erro na validação entre blocos: {e}")
-    
-    def _add_inconsistency(self, **kwargs):
-        """Adiciona inconsistência à lista"""
-        self.inconsistency_counter += 1
-        inconsistency = Inconsistency(
-            id=f"INCONS_{self.inconsistency_counter:06d}",
-            **kwargs
-        )
-        self.inconsistencies.append(inconsistency)
-    
-    def _safe_str(self, value: Any) -> str:
-        """Converte valor para string de forma segura"""
-        if value is None or pd.isna(value):
-            return ''
-        return str(value).strip()
-    
-    def _safe_decimal(self, value: Any) -> Optional[Decimal]:
-        """Converte valor para Decimal de forma segura"""
-        if value is None or pd.isna(value):
-            return None
-        try:
-            val_str = str(value).replace(',', '.').strip()
-            if val_str == '' or val_str == 'nan':
-                return None
-            return Decimal(val_str)
-        except:
-            return None
-    
-    def _get_default_aliquot(self, cst: str, cfop: str) -> Decimal:
-        """Busca alíquota padrão baseada em regras"""
-        if cfop.startswith(('1', '2', '3')):
-            return Decimal('12.00')
-        elif cfop.startswith(('5', '6', '7')):
-            if cfop.startswith('6'):
-                return Decimal('7.00')
-            else:
-                return Decimal('18.00')
-        return Decimal('17.00')
-    
-    def get_statistics(self) -> Dict[str, Any]:
-        """Retorna estatísticas das validações"""
-        critical = sum(1 for i in self.inconsistencies if i.severity == SeverityLevel.CRITICA)
-        warnings = sum(1 for i in self.inconsistencies if i.severity == SeverityLevel.AVISO)
-        info = sum(1 for i in self.inconsistencies if i.severity == SeverityLevel.INFORMACAO)
-        
-        by_block = {}
-        for inc in self.inconsistencies:
-            block = inc.block
-            by_block[block] = by_block.get(block, 0) + 1
-        
-        by_cst = {}
-        for inc in self.inconsistencies:
-            if inc.cst:
-                by_cst[inc.cst] = by_cst.get(inc.cst, 0) + 1
-        
-        return {
-            'total': len(self.inconsistencies),
-            'critical': critical,
-            'warnings': warnings,
-            'info': info,
-            'by_block': by_block,
-            'by_cst': by_cst,
-            'auto_correctable': sum(1 for i in self.inconsistencies if i.can_auto_correct)
-        }
-
-# ============================================================================
-# MOTOR DE REGRAS TRIBUTÁRIAS
-# ============================================================================
-
-class TaxRuleEngine:
-    """
-    Motor de regras tributárias configurável
-    """
-    
-    def __init__(self):
-        self.rules: Dict[str, TaxRule] = {}
-        self.load_default_rules()
-    
-    def load_default_rules(self):
-        """Carrega regras padrão do sistema"""
-        default_rules = [
-            TaxRule(
-                rule_id='R001',
-                cst='000',
-                cfop_pattern='*',
-                operation_type=OperationType.SAIDA,
-                requires_base=True,
-                requires_aliquot=True,
-                requires_tax_value=True,
-                base_calculation_source='item_value',
-                default_aliquot=18.00,
-                calculation_formula='base * aliquot / 100',
-                description='Tributação integral - operação própria'
-            ),
-            TaxRule(
-                rule_id='R002',
-                cst='020',
-                cfop_pattern='*',
-                operation_type=OperationType.SAIDA,
-                requires_base=True,
-                requires_aliquot=True,
-                requires_tax_value=True,
-                base_calculation_source='item_value',
-                default_aliquot=18.00,
-                calculation_formula='base * aliquot / 100',
-                description='Com redução de base de cálculo'
-            ),
-            TaxRule(
-                rule_id='R003',
-                cst='040',
-                cfop_pattern='*',
-                operation_type=OperationType.SAIDA,
-                requires_base=False,
-                requires_aliquot=False,
-                requires_tax_value=False,
-                description='Isenta - sem imposto'
-            ),
-            TaxRule(
-                rule_id='R004',
-                cst='060',
-                cfop_pattern='*',
-                operation_type=OperationType.ENTRADA,
-                requires_base=False,
-                requires_aliquot=False,
-                requires_tax_value=False,
-                description='ST anterior - sem imposto'
-            ),
-        ]
-        
-        for rule in default_rules:
-            self.rules[rule.rule_id] = rule
-    
-    def add_rule(self, rule: TaxRule) -> bool:
-        if rule.rule_id in self.rules:
-            return False
-        self.rules[rule.rule_id] = rule
-        return True
-    
-    def update_rule(self, rule_id: str, updated_rule: TaxRule) -> bool:
-        if rule_id not in self.rules:
-            return False
-        self.rules[rule_id] = updated_rule
-        return True
-    
-    def delete_rule(self, rule_id: str) -> bool:
-        if rule_id in self.rules:
-            del self.rules[rule_id]
-            return True
-        return False
-    
-    def get_rule(self, rule_id: str) -> Optional[TaxRule]:
-        return self.rules.get(rule_id)
-    
-    def find_applicable_rules(self, cst: str, cfop: str, operation: str) -> List[TaxRule]:
-        applicable = []
-        
-        for rule in self.rules.values():
-            if not rule.is_active:
-                continue
-            
-            if rule.cst != cst:
-                continue
-            
-            if rule.cfop_pattern != '*' and not cfop.startswith(rule.cfop_pattern):
-                continue
-            
-            if rule.operation_type.value != operation:
-                continue
-            
-            applicable.append(rule)
-        
-        return applicable
-    
-    def calculate_tax(self, base: Decimal, aliquot: Decimal, formula: str = 'base * aliquot / 100') -> Decimal:
-        try:
-            if formula == 'base * aliquot / 100':
-                return (base * aliquot / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            else:
-                return (base * aliquot / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-        except:
-            return Decimal('0')
-    
-    def to_dict(self) -> Dict:
-        return {rule_id: rule.to_dict() for rule_id, rule in self.rules.items()}
-    
-    def from_dict(self, data: Dict):
-        self.rules = {}
-        for rule_id, rule_data in data.items():
-            self.rules[rule_id] = TaxRule.from_dict(rule_data)
-
-# ============================================================================
-# SERVIÇO DE CORREÇÃO
-# ============================================================================
-
-class CorrectionService:
-    """
-    Serviço de correção fiscal
-    """
-    
-    def __init__(self):
-        self.audit_log: List[AuditEntry] = []
-        self.correction_history: List[Dict] = []
-    
-    def correct_inconsistency(self, inconsistency: Inconsistency, 
-                              blocks_data: Dict[str, pd.DataFrame],
-                              custom_value: Optional[Any] = None) -> Tuple[bool, str, Dict]:
-        try:
-            block = inconsistency.block
-            registry = inconsistency.registry
-            field = inconsistency.field
-            
-            if block not in blocks_data:
-                return False, f"Bloco {block} não encontrado", {}
-            
-            df = blocks_data[block]
-            
-            if 'register' not in df.columns:
-                return False, "DataFrame sem coluna de registro", {}
-            
-            register_df = df[df['register'] == registry]
-            
-            if register_df.empty:
-                return False, f"Registro {registry} não encontrado no bloco {block}", {}
-            
-            new_value = custom_value if custom_value is not None else inconsistency.suggested_correction
-            
-            if new_value is None:
-                return False, "Sem valor de correção definido", {}
-            
-            idx = register_df.index[0]
-            old_value = df.at[idx, field] if field in df.columns else None
-            
-            audit_entry = AuditEntry(
-                timestamp=datetime.now(),
-                user='Sistema',
-                action='correction',
-                block=block,
-                registry=registry,
-                field=field,
-                old_value=old_value,
-                new_value=new_value,
-                reason=f"Correção automática: {inconsistency.description}",
-                rule_applied=inconsistency.rule_reference,
-                document_id=inconsistency.document_number,
-                item_id=inconsistency.item_number
-            )
-            self.audit_log.append(audit_entry)
-            
-            if field in df.columns:
-                df.at[idx, field] = new_value
-                
-                self.correction_history.append({
-                    'timestamp': datetime.now(),
-                    'block': block,
-                    'registry': registry,
-                    'field': field,
-                    'old_value': old_value,
-                    'new_value': new_value,
-                    'inconsistency_id': inconsistency.id
-                })
-                
-                return True, f"Correção aplicada: {field} = {new_value}", blocks_data
-            else:
-                return False, f"Campo {field} não encontrado", {}
-                
-        except Exception as e:
-            logger.error(f"Erro na correção: {str(e)}", exc_info=True)
-            return False, f"Erro: {str(e)}", {}
-    
-    def correct_batch(self, inconsistencies: List[Inconsistency],
-                      blocks_data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-        corrected = []
-        failed = []
-        updated_blocks = deepcopy(blocks_data)
-        
-        for inc in inconsistencies:
-            if inc.can_auto_correct:
-                success, message, updated = self.correct_inconsistency(inc, updated_blocks)
-                
-                if success:
-                    corrected.append({
-                        'id': inc.id,
-                        'description': inc.description,
-                        'field': inc.field,
-                        'new_value': inc.suggested_correction
-                    })
-                    if updated:
-                        updated_blocks = updated
-                else:
-                    failed.append({
-                        'id': inc.id,
-                        'description': inc.description,
-                        'error': message
-                    })
-        
-        return {
-            'success': len(failed) == 0,
-            'corrected_count': len(corrected),
-            'failed_count': len(failed),
-            'corrected': corrected,
-            'failed': failed,
-            'updated_blocks': updated_blocks,
-            'audit_log': [entry.to_dict() for entry in self.audit_log]
-        }
-    
-    def apply_mass_correction(self, filters: Dict, correction_config: Dict,
-                             blocks_data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-        affected_count = 0
-        updated_blocks = deepcopy(blocks_data)
-        
-        block = filters.get('block')
-        registry = filters.get('registry')
-        cst = filters.get('cst')
-        cfop = filters.get('cfop')
-        
-        field_to_correct = correction_config.get('field')
-        correction_type = correction_config.get('type')
-        value = correction_config.get('value')
-        formula = correction_config.get('formula')
-        
-        if block and block in updated_blocks:
-            df = updated_blocks[block]
-            
-            mask = pd.Series(True, index=df.index)
-            
-            if registry and 'register' in df.columns:
-                mask &= (df['register'] == registry)
-            
-            if cst and 'CST_ICMS' in df.columns:
-                mask &= (df['CST_ICMS'] == cst)
-            
-            if cfop and 'CFOP' in df.columns:
-                mask &= (df['CFOP'] == cfop)
-            
-            affected_df = df[mask]
-            
-            if not affected_df.empty and field_to_correct:
-                for idx in affected_df.index:
-                    old_value = df.at[idx, field_to_correct] if field_to_correct in df.columns else None
-                    
-                    if correction_type == 'fixed':
-                        df.at[idx, field_to_correct] = value
-                    elif correction_type == 'formula':
-                        if formula == 'base * aliquot / 100':
-                            base = self._safe_decimal(df.at[idx, 'VL_BC_ICMS'])
-                            aliquot = self._safe_decimal(df.at[idx, 'ALIQ_ICMS'])
-                            if base and aliquot:
-                                calculated = (base * aliquot / 100).quantize(Decimal('0.01'))
-                                df.at[idx, field_to_correct] = str(calculated)
-                    
-                    audit_entry = AuditEntry(
-                        timestamp=datetime.now(),
-                        user='Sistema',
-                        action='mass_correction',
-                        block=block,
-                        registry=registry or 'N/A',
-                        field=field_to_correct,
-                        old_value=old_value,
-                        new_value=df.at[idx, field_to_correct],
-                        reason=f"Correção em massa: {correction_config.get('description', '')}"
-                    )
-                    self.audit_log.append(audit_entry)
-                    affected_count += 1
-        
-        return {
-            'success': True,
-            'affected_records': affected_count,
-            'updated_blocks': updated_blocks,
-            'audit_entries': len(self.audit_log)
-        }
-    
-    def _safe_decimal(self, value: Any) -> Optional[Decimal]:
-        try:
-            return Decimal(str(value))
-        except:
-            return None
-
-# ============================================================================
-# SERVIÇO DE EXPORTAÇÃO
-# ============================================================================
-
-class ExportService:
-    """
-    Serviço de exportação de arquivos SPED e relatórios
-    """
-    
-    def __init__(self):
-        pass
-    
-    def export_sped(self, blocks_data: Dict[str, pd.DataFrame], 
-                   metadata: Dict[str, Any]) -> str:
-        output_lines = []
-        block_order = ['0', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', '1', '2', '9']
-        
-        for block in block_order:
-            if block in blocks_data:
-                df = blocks_data[block]
-                
-                if 'original_line' in df.columns:
-                    for idx, row in df.iterrows():
-                        if 'original_line' in row:
-                            line = self._reconstruct_line(row)
-                            output_lines.append(line)
-                else:
-                    for idx, row in df.iterrows():
-                        line = self._row_to_sped_line(row)
-                        output_lines.append(line)
-        
-        return '\n'.join(output_lines)
-    
-    def _reconstruct_line(self, row: pd.Series) -> str:
-        if 'original_line' in row and pd.notna(row['original_line']):
-            parts = row['original_line'].split('|')
-            
-            for col in row.index:
-                if col.startswith('VL_') or col.startswith('ALIQ_') or col.startswith('QTD'):
-                    if col in row and pd.notna(row[col]):
-                        field_names = self._get_field_names_for_register(row.get('register', ''))
-                        if col in field_names:
-                            field_idx = field_names.index(col) + 2
-                            if field_idx < len(parts):
-                                parts[field_idx] = str(row[col])
-            
-            return '|'.join(parts)
-        
-        return row.get('original_line', '')
-    
-    def _row_to_sped_line(self, row: pd.Series) -> str:
-        register = row.get('register', '')
-        fields = []
-        
-        field_names = self._get_field_names_for_register(register)
-        
-        for field in field_names:
-            if field in row.index and pd.notna(row[field]):
-                fields.append(str(row[field]))
-            else:
-                fields.append('')
-        
-        return f"|{register}|{'|'.join(fields)}|"
-    
-    def _get_field_names_for_register(self, register: str) -> List[str]:
-        field_maps = {
-            '0000': ['REG', 'COD_VER', 'COD_FIN', 'DT_INI', 'DT_FIN', 'NOME', 'CNPJ', 
-                     'CPF', 'UF', 'IE', 'COD_MUN', 'IM', 'SUFRAMA', 'IND_PERFIL', 'IND_ATIV'],
-            'C100': ['REG', 'IND_OPER', 'IND_EMIT', 'COD_PART', 'COD_MOD', 'COD_SIT', 
-                     'SER', 'NUM_DOC', 'CHV_NFE', 'DT_DOC', 'DT_E_S', 'VL_DOC', 
-                     'IND_PGTO', 'VL_DESC', 'VL_ABAT_NT', 'VL_MERC', 'IND_FRT', 
-                     'VL_FRT', 'VL_SEG', 'VL_OUT_DA', 'VL_BC_ICMS', 'VL_ICMS', 
-                     'VL_BC_ICMS_ST', 'VL_ICMS_ST', 'VL_IPI', 'VL_PIS', 'VL_COFINS', 
-                     'VL_PIS_ST', 'VL_COFINS_ST'],
-            'C170': ['REG', 'NUM_ITEM', 'COD_ITEM', 'DESCR_COMPL', 'QTD', 'UNID', 
-                     'VL_ITEM', 'VL_DESC', 'IND_MOV', 'CST_ICMS', 'CFOP', 'COD_NAT', 
-                     'VL_BC_ICMS', 'ALIQ_ICMS', 'VL_ICMS', 'VL_BC_ICMS_ST', 'ALIQ_ST', 
-                     'VL_ICMS_ST', 'IND_APUR', 'CST_IPI', 'COD_ENQ', 'VL_BC_IPI', 
-                     'ALIQ_IPI', 'VL_IPI', 'CST_PIS', 'VL_BC_PIS', 'ALIQ_PIS', 
-                     'QUANT_BC_PIS', 'VL_PIS', 'CST_COFINS', 'VL_BC_COFINS', 
-                     'ALIQ_COFINS', 'QUANT_BC_COFINS', 'VL_COFINS', 'COD_CTA'],
-            'C190': ['REG', 'CST_ICMS', 'CFOP', 'ALIQ_ICMS', 'VL_OPR', 'VL_BC_ICMS', 
-                     'VL_ICMS', 'VL_BC_ICMS_ST', 'VL_ICMS_ST', 'VL_RED_BC', 'COD_OBS'],
-            'E110': ['REG', 'VL_TOT_DEBITOS', 'VL_AJ_DEBITOS', 'VL_TOT_AJ_DEBITOS',
-                     'VL_ESTORNOS_CRED', 'VL_TOT_CREDITOS', 'VL_AJ_CREDITOS', 
-                     'VL_TOT_AJ_CREDITOS', 'VL_ESTORNOS_DEB', 'VL_SLD_CREDOR_ANT',
-                     'VL_SLD_APURADO', 'VL_TOT_DED', 'VL_ICMS_RECOLHER', 
-                     'VL_SLD_CREDOR_TRANSPORTAR', 'DEB_ESP'],
-        }
-        return field_maps.get(register, [f'F{i}' for i in range(1, 30)])
-    
-    def export_excel_report(self, inconsistencies: List[Inconsistency],
-                           corrections: List[Dict],
-                           audit_log: List[AuditEntry],
-                           statistics: Dict) -> io.BytesIO:
-        output = io.BytesIO()
-        
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            if inconsistencies:
-                inc_data = []
-                for inc in inconsistencies:
-                    inc_data.append({
-                        'ID': inc.id,
-                        'Severidade': inc.severity.value,
-                        'Bloco': inc.block,
-                        'Registro': inc.registry,
-                        'Campo': inc.field,
-                        'Descrição': inc.description,
-                        'CST': inc.cst or '',
-                        'CFOP': inc.cfop or '',
-                        'Valor Atual': str(inc.current_value),
-                        'Valor Esperado': str(inc.expected_value) if inc.expected_value else '',
-                        'Corrigível Auto': 'Sim' if inc.can_auto_correct else 'Não'
-                    })
-                pd.DataFrame(inc_data).to_excel(writer, sheet_name='Inconsistências', index=False)
-            
-            if corrections:
-                pd.DataFrame(corrections).to_excel(writer, sheet_name='Correções', index=False)
-            
-            if audit_log:
-                audit_data = [entry.to_dict() for entry in audit_log]
-                pd.DataFrame(audit_data).to_excel(writer, sheet_name='Auditoria', index=False)
-            
-            if statistics:
-                stats_df = pd.DataFrame([statistics])
-                stats_df.to_excel(writer, sheet_name='Estatísticas', index=False)
-        
-        output.seek(0)
-        return output
-    
-    def export_csv(self, data: List[Dict]) -> str:
-        if not data:
-            return ''
-        
-        df = pd.DataFrame(data)
-        return df.to_csv(index=False)
-
-# ============================================================================
-# APLICAÇÃO PRINCIPAL STREAMLIT - INTERFACE
-# ============================================================================
+# ════════════════════════════════════════════════════════════════════════════════
+# CONFIGURAÇÃO DA PÁGINA — deve preceder qualquer chamada st.*
+# ════════════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(
-    page_title="SPED Manager Pro - Sistema Fiscal Corporativo",
-    page_icon="📊",
+    page_title="SPED Auditor — Fiscal Intelligence",
+    page_icon="🔍",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={"About": "SPED Auditor v1.0 | Auditoria Fiscal de Arquivos SPED"},
 )
 
-# CSS Profissional
-st.markdown("""
-<style>
-    .main {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-    }
-    .stApp {
-        background: #ffffff;
-    }
-    .metric-card {
-        background: white;
-        border-radius: 10px;
-        padding: 20px;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-        border-left: 4px solid #4CAF50;
-        transition: transform 0.3s;
-    }
-    .metric-card:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 4px 15px rgba(0,0,0,0.15);
-    }
-    .metric-card.warning {
-        border-left-color: #ff9800;
-    }
-    .metric-card.danger {
-        border-left-color: #f44336;
-    }
-    .metric-card.info {
-        border-left-color: #2196F3;
-    }
-    .metric-value {
-        font-size: 32px;
-        font-weight: bold;
-        color: #2c3e50;
-    }
-    .metric-label {
-        font-size: 14px;
-        color: #7f8c8d;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    .alert-critical {
-        background-color: #fff5f5;
-        border-left: 4px solid #f44336;
-        padding: 12px;
-        margin: 10px 0;
-        border-radius: 4px;
-    }
-    .alert-warning {
-        background-color: #fffbf0;
-        border-left: 4px solid #ff9800;
-        padding: 12px;
-        margin: 10px 0;
-        border-radius: 4px;
-    }
-    .alert-success {
-        background-color: #f0fff4;
-        border-left: 4px solid #4CAF50;
-        padding: 12px;
-        margin: 10px 0;
-        border-radius: 4px;
-    }
-    .dataframe {
-        font-size: 13px !important;
-        border-collapse: collapse;
-    }
-    .dataframe th {
-        background-color: #2c3e50;
-        color: white;
-        padding: 10px;
-        font-weight: 600;
-    }
-    .dataframe td {
-        padding: 8px;
-        border-bottom: 1px solid #e0e0e0;
-    }
-    .stButton > button {
-        border-radius: 6px;
-        font-weight: 500;
-        padding: 8px 20px;
-        transition: all 0.3s;
-        border: none;
-    }
-    .stButton > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    }
-    .primary-btn > button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-    }
-    .css-1d391kg {
-        background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
-    }
-    .css-1d391kg .stRadio > div {
-        color: #ecf0f1;
-    }
-    h1 {
-        color: #2c3e50;
-        font-weight: 700;
-        border-bottom: 3px solid #3498db;
-        padding-bottom: 10px;
-        margin-bottom: 30px;
-    }
-    h2 {
-        color: #34495e;
-        font-weight: 600;
-        margin-top: 30px;
-    }
-    h3 {
-        color: #7f8c8d;
-        font-weight: 500;
-    }
-    .edited-cell {
-        background-color: #fff9c4 !important;
-        border: 2px solid #fbc02d !important;
-    }
-    .original-value {
-        color: #e53935;
-        text-decoration: line-through;
-        font-size: 12px;
-    }
-    .new-value {
-        color: #43a047;
-        font-weight: bold;
-        font-size: 12px;
-    }
-    .stProgress > div > div {
-        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
-    }
-</style>
-""", unsafe_allow_html=True)
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  CAMADA DE DADOS  ████████████████████████████████████
+# ════════════════════════════════════════════════════════════════════════════════
 
-# ============================================================================
-# INICIALIZAÇÃO DO ESTADO DA SESSÃO
-# ============================================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. MODELOS DE DADOS
+# ─────────────────────────────────────────────────────────────────────────────
 
-def init_session_state():
-    if 'initialized' not in st.session_state:
-        st.session_state.initialized = True
-        st.session_state.sped_loaded = False
-        st.session_state.sped_type = ''
-        st.session_state.metadata = {}
-        st.session_state.blocks_data = {}
-        st.session_state.raw_data = ''
-        st.session_state.parser = SPEDParser()
-        st.session_state.validator = None
-        st.session_state.inconsistencies = []
-        st.session_state.inconsistency_stats = {}
-        st.session_state.rule_engine = TaxRuleEngine()
-        st.session_state.correction_service = CorrectionService()
-        st.session_state.corrections_applied = []
-        st.session_state.export_service = ExportService()
-        st.session_state.audit_log = []
-        st.session_state.current_view = 'dashboard'
-        st.session_state.selected_block = None
-        st.session_state.selected_register = None
-        st.session_state.editing_cell = None
-        st.session_state.undo_stack = []
-        st.session_state.filters = {}
-        st.session_state.success_messages = []
-        st.session_state.error_messages = []
+@dataclass
+class LinhaRegistro:
+    """Uma linha do arquivo SPED após tokenização por '|'."""
+    numero_linha: int
+    bloco: str
+    registro: str
+    campos: list[str]
+    linha_original: str
 
-def reset_session():
-    st.session_state.sped_loaded = False
-    st.session_state.sped_type = ''
-    st.session_state.metadata = {}
-    st.session_state.blocks_data = {}
-    st.session_state.inconsistencies = []
-    st.session_state.corrections_applied = []
-    st.session_state.audit_log = []
-    st.session_state.current_view = 'dashboard'
+    def get(self, indice: int, default: str = "") -> str:
+        try:
+            return self.campos[indice] if indice < len(self.campos) else default
+        except IndexError:
+            return default
 
-# ============================================================================
-# FUNÇÕES AUXILIARES
-# ============================================================================
+    def set(self, indice: int, valor: str) -> None:
+        while len(self.campos) <= indice:
+            self.campos.append("")
+        self.campos[indice] = valor
 
-def safe_float(value: Any, default: float = 0.0) -> float:
-    try:
-        return float(str(value).replace(',', '.'))
-    except:
-        return default
+    def to_sped(self) -> str:
+        return "|" + "|".join(self.campos) + "|\n"
 
-def safe_str(value: Any) -> str:
-    if value is None or pd.isna(value):
-        return ''
-    return str(value).strip()
 
-def format_currency(value: Any) -> str:
-    try:
-        val = float(str(value).replace(',', '.'))
-        return f"R$ {val:,.2f}"
-    except:
-        return "R$ 0,00"
+@dataclass
+class MetadadosArquivo:
+    """Metadados extraídos do registro 0000."""
+    tipo_escrituracao: str = ""
+    periodo_apuracao: str = ""
+    cnpj: str = ""
+    nome_empresa: str = ""
+    uf: str = ""
+    ie: str = ""
+    cod_municipio: str = ""
+    ind_perfil: str = ""
+    total_linhas: int = 0
+    blocos_presentes: list[str] = field(default_factory=list)
 
-def get_register_description(register: str) -> str:
-    return REGISTER_DESCRIPTIONS.get(register, 'Registro não documentado')
 
-def get_block_description(block: str) -> str:
-    return BLOCK_DESCRIPTIONS.get(block, 'Bloco não documentado')
+@dataclass
+class ResultadoParser:
+    """Saída completa do parser."""
+    metadados: MetadadosArquivo
+    linhas: list[LinhaRegistro]
+    df: pd.DataFrame
+    erros: list[str]
+    tipo_arquivo: str  # 'EFD_ICMS_IPI' | 'EFD_CONTRIBUICOES' | 'DESCONHECIDO'
 
-# ============================================================================
-# COMPONENTES DA INTERFACE
-# ============================================================================
 
-def render_sidebar():
-    with st.sidebar:
-        st.markdown("""
-        <div style="text-align: center; padding: 20px 0;">
-            <h1 style="color: white; font-size: 24px; margin: 0;">📊 SPED Manager</h1>
-            <p style="color: #bdc3c7; font-size: 14px; margin: 5px 0;">Sistema Fiscal Corporativo</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.markdown("### Navegação")
-        
-        nav_options = {
-            '🏠 Dashboard': 'dashboard',
-            '📤 Upload SPED': 'upload',
-            '📋 Blocos e Registros': 'blocks',
-            '📄 Documentos Fiscais': 'documents',
-            '📦 Itens': 'items',
-            '⚠️ Inconsistências': 'inconsistencies',
-            '🔧 Correções em Massa': 'mass_correction',
-            '✏️ Editor Manual': 'editor',
-            '📤 Exportação': 'export',
-            '📜 Auditoria': 'audit',
-            '⚙️ Regras Tributárias': 'rules_config'
-        }
-        
-        selected = st.radio(
-            'Selecione a seção:',
-            list(nav_options.keys()),
-            index=0,
-            label_visibility='collapsed'
-        )
-        
-        st.session_state.current_view = nav_options[selected]
-        
-        st.markdown("---")
-        
-        if st.session_state.sped_loaded:
-            st.success("✅ Arquivo Carregado")
-            
-            metadata = st.session_state.metadata
-            if metadata:
-                st.markdown(f"""
-                <div style="background: rgba(255,255,255,0.1); padding: 10px; border-radius: 5px; margin: 10px 0;">
-                    <p style="color: white; font-size: 12px; margin: 2px 0;">
-                        <strong>Tipo:</strong> {st.session_state.sped_type}
-                    </p>
-                    <p style="color: white; font-size: 12px; margin: 2px 0;">
-                        <strong>CNPJ:</strong> {metadata.get('cnpj', 'N/A')}
-                    </p>
-                    <p style="color: white; font-size: 12px; margin: 2px 0;">
-                        <strong>Período:</strong> {metadata.get('periodo_inicial', '')} a {metadata.get('periodo_final', '')}
-                    </p>
-                    <p style="color: white; font-size: 12px; margin: 2px 0;">
-                        <strong>Blocos:</strong> {len(st.session_state.blocks_data)}
-                    </p>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            if st.session_state.inconsistencies:
-                total_inc = len(st.session_state.inconsistencies)
-                critical = sum(1 for i in st.session_state.inconsistencies 
-                             if i.severity == SeverityLevel.CRITICA)
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.metric("Total Incons.", total_inc)
-                with col2:
-                    st.metric("Críticas", critical, delta=f"-{critical}" if critical > 0 else "0")
-        else:
-            st.info("📂 Nenhum arquivo carregado")
-        
-        st.markdown("---")
-        
-        if st.session_state.sped_loaded:
-            if st.button("🔄 Resetar Tudo"):
-                reset_session()
-                st.rerun()
-        
-        st.caption("SPED Manager Pro v2.1.0")
-        st.caption("© 2024 - Solução Fiscal Corporativa")
+@dataclass
+class RegraFiscal:
+    """Define o comportamento esperado para CST + CFOP."""
+    id: str
+    cst_icms: str          # valor exato ou "*"
+    cfop: str              # valor exato, prefixo ou "*"
+    ind_oper: str          # "E" | "S" | "*"
+    descricao: str
+    exige_base: bool
+    exige_aliquota: bool
+    exige_valor_icms: bool
+    base_campo_sugerido: str   # "VL_ITEM" | "VL_DOC" | ""
+    aliquota_padrao: Optional[float]
+    formula: str           # "base * aliq / 100" | "zero"
+    permite_base_zero: bool
+    permite_icms_zero: bool
+    criticidade: str       # "critica" | "aviso" | "info"
+    ativa: bool = True
 
-def render_dashboard():
-    st.header("🏠 Dashboard Fiscal")
-    
-    if not st.session_state.sped_loaded:
-        st.info("📤 Faça o upload de um arquivo SPED para começar")
-        return
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    metadata = st.session_state.metadata
-    blocks = st.session_state.blocks_data
-    
-    with col1:
-        total_records = sum(len(df) for df in blocks.values()) if blocks else 0
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Total de Registros</div>
-            <div class="metric-value">{total_records:,}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown(f"""
-        <div class="metric-card info">
-            <div class="metric-label">Blocos Encontrados</div>
-            <div class="metric-value">{len(blocks)}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col3:
-        inc_count = len(st.session_state.inconsistencies)
-        severity_class = 'danger' if inc_count > 0 else 'success'
-        st.markdown(f"""
-        <div class="metric-card {severity_class}">
-            <div class="metric-label">Inconsistências</div>
-            <div class="metric-value">{inc_count}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    with col4:
-        corrections = len(st.session_state.corrections_applied)
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Correções Aplicadas</div>
-            <div class="metric-value">{corrections}</div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("📊 Distribuição por Bloco")
-        
-        if blocks:
-            block_counts = {block: len(df) for block, df in blocks.items()}
-            block_df = pd.DataFrame({
-                'Bloco': list(block_counts.keys()),
-                'Registros': list(block_counts.values()),
-                'Descrição': [get_block_description(b) for b in block_counts.keys()]
-            })
-            
-            st.bar_chart(block_df.set_index('Bloco')['Registros'])
-            st.dataframe(block_df, use_container_width=True, hide_index=True)
-    
-    with col2:
-        st.subheader("📈 Análise de CSTs")
-        
-        if 'C' in blocks and blocks['C'] is not None:
-            c_df = blocks['C']
-            if 'register' in c_df.columns:
-                c170_df = c_df[c_df['register'] == 'C170']
-                if not c170_df.empty and 'CST_ICMS' in c170_df.columns:
-                    cst_counts = c170_df['CST_ICMS'].value_counts()
-                    
-                    cst_data = []
-                    for cst, count in cst_counts.items():
-                        cst_info = CST_ICMS_CODES.get(str(cst), {})
-                        cst_data.append({
-                            'CST': cst,
-                            'Descrição': cst_info.get('description', 'Desconhecido'),
-                            'Quantidade': count
-                        })
-                    
-                    if cst_data:
-                        cst_df = pd.DataFrame(cst_data)
-                        st.dataframe(cst_df, use_container_width=True, hide_index=True)
-                        st.bar_chart(cst_df.set_index('CST')['Quantidade'])
-    
-    if st.session_state.inconsistencies:
-        st.markdown("---")
-        st.subheader("🚨 Inconsistências Críticas Recentes")
-        
-        critical_issues = [i for i in st.session_state.inconsistencies 
-                          if i.severity == SeverityLevel.CRITICA][:10]
-        
-        if critical_issues:
-            for issue in critical_issues:
-                st.markdown(f"""
-                <div class="alert-critical">
-                    <strong>{issue.registry} - {issue.field}</strong><br>
-                    {issue.description}<br>
-                    <small>CST: {issue.cst} | CFOP: {issue.cfop} | 
-                    Atual: {issue.current_value} | Esperado: {issue.expected_value}</small>
-                </div>
-                """, unsafe_allow_html=True)
+    def match_cst(self, cst: str) -> bool:
+        return self.cst_icms == "*" or cst == self.cst_icms or cst.startswith(self.cst_icms)
 
-def render_upload():
-    st.header("📤 Upload de Arquivo SPED")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        uploaded_file = st.file_uploader(
-            "Selecione o arquivo SPED (.txt)",
-            type=['txt'],
-            help="Formatos suportados: EFD ICMS/IPI, EFD Contribuições",
-            key="file_uploader"
-        )
-        
-        if uploaded_file is not None:
-            with st.spinner("🔄 Processando arquivo SPED..."):
-                parser = SPEDParser()
-                result = parser.parse_file(uploaded_file)
-                
-                if result['success']:
-                    st.session_state.sped_loaded = True
-                    st.session_state.sped_type = result['sped_type']
-                    st.session_state.metadata = result['metadata']
-                    st.session_state.blocks_data = result['blocks']
-                    st.session_state.raw_data = result['data']
-                    
-                    with st.spinner("🔍 Validando regras fiscais..."):
-                        validator = FiscalValidator(st.session_state.rule_engine.to_dict())
-                        inconsistencies = validator.validate(st.session_state.blocks_data)
-                        st.session_state.validator = validator
-                        st.session_state.inconsistencies = inconsistencies
-                        st.session_state.inconsistency_stats = validator.get_statistics()
-                    
-                    st.success(f"✅ Arquivo processado com sucesso!")
-                    st.info(f"📊 {result['stats']['total_records']} registros encontrados em "
-                           f"{len(result['blocks'])} blocos")
-                    
-                    with st.expander("📋 Detalhes do Arquivo", expanded=True):
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.metric("Tipo", result['sped_type'])
-                            st.metric("CNPJ", result['metadata'].get('cnpj', 'N/A'))
-                        
-                        with col2:
-                            st.metric("IE", result['metadata'].get('ie', 'N/A'))
-                            st.metric("UF", result['metadata'].get('uf', 'N/A'))
-                        
-                        with col3:
-                            st.metric("Período Inicial", result['metadata'].get('periodo_inicial', ''))
-                            st.metric("Período Final", result['metadata'].get('periodo_final', ''))
-                        
-                        st.subheader("Blocos Identificados")
-                        blocks_info = []
-                        for block_id, df in result['blocks'].items():
-                            blocks_info.append({
-                                'Bloco': block_id,
-                                'Descrição': get_block_description(block_id),
-                                'Registros': len(df)
-                            })
-                        
-                        if blocks_info:
-                            st.dataframe(pd.DataFrame(blocks_info), use_container_width=True, 
-                                       hide_index=True)
-                    
-                    if inconsistencies:
-                        st.warning(f"⚠️ {len(inconsistencies)} inconsistências detectadas")
-                        
-                        stats = validator.get_statistics()
-                        col1, col2, col3 = st.columns(3)
-                        with col1:
-                            st.metric("Críticas", stats['critical'])
-                        with col2:
-                            st.metric("Avisos", stats['warnings'])
-                        with col3:
-                            st.metric("Corrigíveis", stats['auto_correctable'])
-                else:
-                    st.error(f"❌ Erro: {result['error']}")
-    
-    with col2:
-        st.info("""
-        ### ℹ️ Informações
-        
-        **Formatos suportados:**
-        - ✅ EFD ICMS/IPI
-        - ✅ EFD Contribuições
-        
-        **Requisitos:**
-        - Arquivo texto (.txt)
-        - Delimitador pipe (|)
-        - Encoding UTF-8 ou Latin-1
-        
-        **Após o upload:**
-        1. O sistema identifica o tipo
-        2. Extrai metadados
-        3. Estrutura em blocos
-        4. Valida regras fiscais
-        5. Detecta inconsistências
-        """)
+    def match_cfop(self, cfop: str) -> bool:
+        return self.cfop == "*" or cfop == self.cfop or cfop.startswith(self.cfop)
 
-def render_blocks_view():
-    st.header("📋 Visão por Blocos e Registros")
-    
-    if not st.session_state.sped_loaded:
-        st.warning("⚠️ Carregue um arquivo SPED primeiro!")
-        return
-    
-    blocks = st.session_state.blocks_data
-    
-    block_list = list(blocks.keys())
-    selected_block = st.selectbox(
-        "Selecione o Bloco:",
-        block_list,
-        format_func=lambda x: f"Bloco {x} - {get_block_description(x)}"
-    )
-    
-    if selected_block:
-        df = blocks[selected_block]
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total de Registros", len(df))
-        
-        with col2:
-            if 'register' in df.columns:
-                unique_registers = df['register'].nunique()
-                st.metric("Tipos de Registro", unique_registers)
-        
-        with col3:
-            block_issues = [i for i in st.session_state.inconsistencies 
-                          if i.block == selected_block]
-            st.metric("Inconsistências", len(block_issues))
-        
-        if 'register' in df.columns:
-            register_types = ['Todos'] + sorted(df['register'].unique().tolist())
-            selected_register = st.selectbox(
-                "Filtrar por Registro:",
-                register_types,
-                format_func=lambda x: f"{x} - {get_register_description(x)}" if x != 'Todos' else 'Todos'
-            )
-            
-            if selected_register != 'Todos':
-                df = df[df['register'] == selected_register]
-        
-        st.subheader(f"📊 Dados do Bloco {selected_block}")
-        
-        view_mode = st.radio(
-            "Modo de Visualização:",
-            ["Tabela Completa", "Resumo", "Campos Tributários"],
-            horizontal=True
-        )
-        
-        if view_mode == "Tabela Completa":
-            st.dataframe(df, use_container_width=True)
-        
-        elif view_mode == "Resumo":
-            if 'register' in df.columns:
-                summary = df.groupby('register').size().reset_index(name='Quantidade')
-                summary['Descrição'] = summary['register'].apply(get_register_description)
-                st.dataframe(summary, use_container_width=True, hide_index=True)
-        
-        elif view_mode == "Campos Tributários":
-            tax_columns = [col for col in df.columns if any(
-                prefix in col for prefix in ['CST', 'CFOP', 'VL_', 'ALIQ_', 'BC_']
-            )]
-            if 'register' in df.columns:
-                tax_columns.insert(0, 'register')
-            
-            if tax_columns:
-                st.dataframe(df[tax_columns], use_container_width=True)
-            else:
-                st.info("Nenhum campo tributário encontrado neste bloco")
-        
-        with st.expander("📈 Estatísticas do Bloco"):
-            if 'register' in df.columns:
-                st.write("Distribuição por tipo de registro:")
-                reg_dist = df['register'].value_counts()
-                st.bar_chart(reg_dist)
+    def match_oper(self, op: str) -> bool:
+        return self.ind_oper in ("*", op)
 
-def render_documents_view():
-    st.header("📄 Documentos Fiscais")
-    
-    if not st.session_state.sped_loaded:
-        st.warning("⚠️ Carregue um arquivo SPED primeiro!")
-        return
-    
-    blocks = st.session_state.blocks_data
-    
-    documents_data = []
-    
-    for block_id, df in blocks.items():
-        if 'register' not in df.columns:
+
+@dataclass
+class EntradaAuditoria:
+    """Registro imutável de uma alteração realizada."""
+    id: str
+    timestamp: str
+    usuario: str
+    numero_linha: int
+    registro: str
+    bloco: str
+    campo: str
+    valor_anterior: str
+    valor_novo: str
+    regra: str
+    motivo: str
+    tipo: str  # "MANUAL" | "MASSA" | "AUTO"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. MAPA DE CAMPOS POR REGISTRO (índice posicional → nome semântico)
+# ─────────────────────────────────────────────────────────────────────────────
+
+MAPA_CAMPOS: dict[str, dict[str, int]] = {
+    "0000": {
+        "COD_VER": 1, "COD_FIN": 2, "DT_INI": 3, "DT_FIN": 4,
+        "NOME": 5, "CNPJ": 6, "CPF": 7, "UF": 8, "IE": 9,
+        "COD_MUN": 10, "IND_PERFIL": 13,
+    },
+    "0150": {
+        "COD_PART": 1, "NOME": 2, "COD_PAIS": 3, "CNPJ": 4,
+        "CPF": 5, "IE": 6, "COD_MUN": 7, "END": 9, "BAIRRO": 12,
+    },
+    "0200": {
+        "COD_ITEM": 1, "DESCR_ITEM": 2, "COD_BARRA": 3,
+        "UNID_INV": 5, "TIPO_ITEM": 6, "COD_NCM": 7, "ALIQ_ICMS": 11,
+    },
+    "C100": {
+        "IND_OPER": 1, "IND_EMIT": 2, "COD_PART": 3, "COD_MOD": 4,
+        "COD_SIT": 5, "SER": 6, "NUM_DOC": 7, "CHV_NFE": 8,
+        "DT_DOC": 9, "DT_E_S": 10, "VL_DOC": 11,
+        "VL_DESC": 13, "VL_MERC": 15,
+        "VL_BC_ICMS": 20, "VL_ICMS": 21,
+        "VL_BC_ICMS_ST": 22, "VL_ICMS_ST": 23,
+        "VL_IPI": 24, "VL_PIS": 25, "VL_COFINS": 26,
+    },
+    "C170": {
+        "NUM_ITEM": 1, "COD_ITEM": 2, "DESCR_COMPL": 3,
+        "QTD": 4, "UNID": 5, "VL_ITEM": 6, "VL_DESC": 7, "IND_MOV": 8,
+        "CST_ICMS": 9, "CFOP": 10,
+        "VL_BC_ICMS": 12, "ALIQ_ICMS": 13, "VL_ICMS": 14,
+        "VL_BC_ICMS_ST": 15, "ALIQ_ST": 16, "VL_ICMS_ST": 17,
+        "CST_IPI": 19, "VL_BC_IPI": 20, "ALIQ_IPI": 21, "VL_IPI": 22,
+        "CST_PIS": 23, "VL_BC_PIS": 24, "ALIQ_PIS": 25, "VL_PIS": 26,
+        "CST_COFINS": 27, "VL_BC_COFINS": 28, "ALIQ_COFINS": 29, "VL_COFINS": 30,
+    },
+    "C190": {
+        "CST_ICMS": 1, "CFOP": 2, "ALIQ_ICMS": 3,
+        "VL_OPR": 4, "VL_BC_ICMS": 5, "VL_ICMS": 6,
+        "VL_BC_ICMS_ST": 7, "VL_ICMS_ST": 8,
+    },
+    "D100": {
+        "IND_OPER": 1, "COD_PART": 3, "COD_MOD": 4, "COD_SIT": 5,
+        "NUM_DOC": 8, "DT_DOC": 10, "VL_DOC": 14,
+        "VL_BC_ICMS": 18, "ALIQ_ICMS": 19, "VL_ICMS": 20,
+    },
+    "E110": {
+        "VL_TOT_DEBITOS": 1, "VL_TOT_CREDITOS": 5,
+        "VL_SLD_APURADO": 10, "VL_ICMS_RECOLHER": 12,
+    },
+}
+
+CAMPOS_NUMERICOS = {
+    "VL_ITEM", "VL_BC_ICMS", "ALIQ_ICMS", "VL_ICMS",
+    "VL_BC_ICMS_ST", "ALIQ_ST", "VL_ICMS_ST",
+    "VL_IPI", "VL_BC_IPI", "ALIQ_IPI",
+    "VL_PIS", "VL_COFINS", "VL_BC_PIS", "VL_BC_COFINS",
+    "ALIQ_PIS", "ALIQ_COFINS", "VL_DOC", "VL_MERC", "QTD",
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. REGRAS FISCAIS PADRÃO
+# ─────────────────────────────────────────────────────────────────────────────
+
+REGRAS_PADRAO: list[RegraFiscal] = [
+    RegraFiscal(
+        id="000_*", cst_icms="000", cfop="*", ind_oper="*",
+        descricao="Tributado Integralmente — base, alíquota e imposto obrigatórios",
+        exige_base=True, exige_aliquota=True, exige_valor_icms=True,
+        base_campo_sugerido="VL_ITEM", aliquota_padrao=12.0,
+        formula="base * aliq / 100",
+        permite_base_zero=False, permite_icms_zero=False, criticidade="critica",
+    ),
+    RegraFiscal(
+        id="010_*", cst_icms="010", cfop="*", ind_oper="*",
+        descricao="Tributado + ST — base, alíquota e imposto obrigatórios",
+        exige_base=True, exige_aliquota=True, exige_valor_icms=True,
+        base_campo_sugerido="VL_ITEM", aliquota_padrao=12.0,
+        formula="base * aliq / 100",
+        permite_base_zero=False, permite_icms_zero=False, criticidade="critica",
+    ),
+    RegraFiscal(
+        id="020_*", cst_icms="020", cfop="*", ind_oper="*",
+        descricao="Tributado com Redução de BC — base reduzida obrigatória",
+        exige_base=True, exige_aliquota=True, exige_valor_icms=True,
+        base_campo_sugerido="VL_ITEM", aliquota_padrao=12.0,
+        formula="base * aliq / 100",
+        permite_base_zero=False, permite_icms_zero=False, criticidade="critica",
+    ),
+    RegraFiscal(
+        id="040_*", cst_icms="040", cfop="*", ind_oper="*",
+        descricao="Isento — não deve ter valores tributários",
+        exige_base=False, exige_aliquota=False, exige_valor_icms=False,
+        base_campo_sugerido="", aliquota_padrao=0.0,
+        formula="zero",
+        permite_base_zero=True, permite_icms_zero=True, criticidade="aviso",
+    ),
+    RegraFiscal(
+        id="041_*", cst_icms="041", cfop="*", ind_oper="*",
+        descricao="Não Tributado — sem valores tributários",
+        exige_base=False, exige_aliquota=False, exige_valor_icms=False,
+        base_campo_sugerido="", aliquota_padrao=0.0,
+        formula="zero",
+        permite_base_zero=True, permite_icms_zero=True, criticidade="aviso",
+    ),
+    RegraFiscal(
+        id="050_*", cst_icms="050", cfop="*", ind_oper="*",
+        descricao="Suspensão — sem valores tributários",
+        exige_base=False, exige_aliquota=False, exige_valor_icms=False,
+        base_campo_sugerido="", aliquota_padrao=0.0,
+        formula="zero",
+        permite_base_zero=True, permite_icms_zero=True, criticidade="aviso",
+    ),
+    RegraFiscal(
+        id="060_*", cst_icms="060", cfop="*", ind_oper="*",
+        descricao="ST Cobrado Anteriormente — verificar campos ST",
+        exige_base=False, exige_aliquota=False, exige_valor_icms=False,
+        base_campo_sugerido="", aliquota_padrao=0.0,
+        formula="zero",
+        permite_base_zero=True, permite_icms_zero=True, criticidade="info",
+    ),
+    RegraFiscal(
+        id="070_*", cst_icms="070", cfop="*", ind_oper="*",
+        descricao="Redução BC + ST — exige próprio e ST",
+        exige_base=True, exige_aliquota=True, exige_valor_icms=True,
+        base_campo_sugerido="VL_ITEM", aliquota_padrao=12.0,
+        formula="base * aliq / 100",
+        permite_base_zero=False, permite_icms_zero=False, criticidade="critica",
+    ),
+    RegraFiscal(
+        id="090_*", cst_icms="090", cfop="*", ind_oper="*",
+        descricao="Outras Situações — verificar manualmente",
+        exige_base=False, exige_aliquota=False, exige_valor_icms=False,
+        base_campo_sugerido="VL_ITEM", aliquota_padrao=None,
+        formula="base * aliq / 100",
+        permite_base_zero=True, permite_icms_zero=True, criticidade="aviso",
+    ),
+]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. ARQUIVO SPED DE DEMONSTRAÇÃO (com inconsistências intencionais)
+# ─────────────────────────────────────────────────────────────────────────────
+
+SPED_DEMO = """\
+|0000|015|0|01012024|31012024|MOVEIS PREMIUM LTDA|12345678000199||SP|123456789|3550308|||A|1|
+|0001|0|
+|0150|001|FORNECEDOR MADEIRAS SA|105|11222333000155||IE999999|3550308|||RUA DAS MADEIRAS|100||CENTRO|
+|0150|002|CLIENTE VAREJO LTDA|105|44555666000177||IE888888|3550308|||AV COMERCIO|200||VILA|
+|0190|UN|UNIDADE|
+|0200|MOV001|PAINEL MDF 18MM|||M2|00|9403990010|||12,00|
+|0200|MOV002|PORTA MDF 210X90|||UN|00|9403990010|||12,00|
+|0990|8|
+|C001|0|
+|C100|0|0|001|55|00|001|000001|43240112345678000199550010000001011000000001|01012024|03012024|10000,00|0|0,00|0,00|10000,00|0|0,00|0,00|0,00|0,00|1200,00|0,00|0,00|0,00|0,00|
+|C170|1|MOV001|PAINEL MDF 18MM|50,000|M2|5000,00|0,00|0|000|5102||5000,00|12,00|600,00|0,00|0,00|0,00|||||||||||||
+|C170|2|MOV002|PORTA MDF 210X90|10,000|UN|5000,00|0,00|0|000|5102||5000,00|12,00|600,00|0,00|0,00|0,00|||||||||||||
+|C190|000|5102|12,00|10000,00|10000,00|1200,00|0,00|0,00|0,00||
+|C100|1|0|002|55|00|001|000002|43240112345678000199550010000002021000000002|05012024|07012024|8000,00|0|0,00|0,00|8000,00|0|0,00|0,00|0,00|0,00|0,00|0,00|0,00|0,00|0,00|
+|C170|1|MOV001|PAINEL MDF 18MM|40,000|M2|4000,00|0,00|0|040|5102||||0,00|0,00|0,00|||||||||||||
+|C170|2|MOV002|PORTA MDF 210X90|8,000|UN|4000,00|0,00|0|040|5102||||0,00|0,00|0,00|||||||||||||
+|C190|040|5102|0,00|8000,00|0,00|0,00|0,00|0,00|0,00||
+|C100|0|0|001|55|00|001|000003|43240112345678000199550010000003031000000003|10012024|12012024|6000,00|0|0,00|0,00|6000,00|0|0,00|0,00|0,00|0,00|0,00|0,00|0,00|0,00|0,00|
+|C170|1|MOV001|PAINEL MDF 18MM|30,000|M2|3000,00|0,00|0|000|5102||||0,00|0,00|0,00|||||||||||||
+|C170|2|MOV002|PORTA MDF 210X90|6,000|UN|3000,00|0,00|0|000|5102||||0,00|0,00|0,00|||||||||||||
+|C190|000|5102|12,00|6000,00|0,00|0,00|0,00|0,00|0,00||
+|C990|14|
+|E001|0|
+|E110|1200,00|0,00|1200,00|0,00|0,00|0,00|0,00|0,00|0,00|1200,00|0,00|1200,00|0,00|0,00|
+|E990|3|
+|9001|0|
+|9900|0000|1|
+|9900|C100|3|
+|9900|C170|6|
+|9900|C190|3|
+|9990|5|
+|9999|36|
+"""
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  PARSER SPED  ████████████████████████████████████████
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _decode_bytes(b: bytes) -> str:
+    for enc in ("utf-8", "latin-1", "cp1252"):
+        try:
+            return b.decode(enc)
+        except UnicodeDecodeError:
             continue
-        
-        if block_id == 'C':
-            c100_df = df[df['register'] == 'C100']
-            for idx, row in c100_df.iterrows():
-                documents_data.append({
-                    'Bloco': 'C',
-                    'Tipo': 'NF-e/NFC-e',
-                    'Número': safe_str(row.get('NUM_DOC', '')),
-                    'Série': safe_str(row.get('SER', '')),
-                    'Data': safe_str(row.get('DT_DOC', '')),
-                    'Emitente/Destinatário': safe_str(row.get('COD_PART', '')),
-                    'Valor': safe_float(row.get('VL_DOC')),
-                    'ICMS': safe_float(row.get('VL_ICMS')),
-                    'Modelo': safe_str(row.get('COD_MOD', ''))
-                })
-        
-        elif block_id == 'D':
-            d100_df = df[df['register'] == 'D100']
-            for idx, row in d100_df.iterrows():
-                documents_data.append({
-                    'Bloco': 'D',
-                    'Tipo': 'CT-e/CTRC',
-                    'Número': safe_str(row.get('NUM_DOC', '')),
-                    'Série': safe_str(row.get('SER', '')),
-                    'Data': safe_str(row.get('DT_DOC', '')),
-                    'Emitente/Destinatário': safe_str(row.get('COD_PART', '')),
-                    'Valor': safe_float(row.get('VL_DOC')),
-                    'ICMS': safe_float(row.get('VL_ICMS')),
-                    'Modelo': safe_str(row.get('COD_MOD', ''))
-                })
-    
-    if documents_data:
-        df_docs = pd.DataFrame(documents_data)
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            filter_block = st.multiselect(
-                "Bloco:",
-                options=df_docs['Bloco'].unique(),
-                default=df_docs['Bloco'].unique()
-            )
-        
-        with col2:
-            filter_model = st.multiselect(
-                "Modelo:",
-                options=df_docs['Modelo'].unique(),
-                default=[]
-            )
-        
-        with col3:
-            date_range = st.date_input(
-                "Período:",
-                value=[]
-            )
-        
-        if filter_block:
-            df_docs = df_docs[df_docs['Bloco'].isin(filter_block)]
-        
-        if filter_model:
-            df_docs = df_docs[df_docs['Modelo'].isin(filter_model)]
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Documentos", len(df_docs))
-        
-        with col2:
-            total_value = df_docs['Valor'].sum()
-            st.metric("Valor Total", f"R$ {total_value:,.2f}")
-        
-        with col3:
-            total_icms = df_docs['ICMS'].sum()
-            st.metric("ICMS Total", f"R$ {total_icms:,.2f}")
-        
-        with col4:
-            avg_value = df_docs['Valor'].mean() if len(df_docs) > 0 else 0
-            st.metric("Valor Médio", f"R$ {avg_value:,.2f}")
-        
-        st.subheader("Lista de Documentos")
-        st.dataframe(df_docs, use_container_width=True, hide_index=True)
-        
-        st.subheader("📊 Distribuição por Modelo")
-        if 'Modelo' in df_docs.columns:
-            model_dist = df_docs.groupby('Modelo').size()
-            st.bar_chart(model_dist)
-    else:
-        st.info("Nenhum documento fiscal encontrado nos blocos C e D")
+    raise ValueError("Encoding do arquivo SPED não reconhecido.")
 
-def render_items_view():
-    st.header("📦 Itens de Documentos Fiscais")
-    
-    if not st.session_state.sped_loaded:
-        st.warning("⚠️ Carregue um arquivo SPED primeiro!")
-        return
-    
-    items_data = []
-    
-    if 'C' in st.session_state.blocks_data:
-        c_df = st.session_state.blocks_data['C']
-        if 'register' in c_df.columns:
-            c170_df = c_df[c_df['register'] == 'C170']
-            
-            for idx, row in c170_df.iterrows():
-                items_data.append({
-                    'Item': safe_str(row.get('NUM_ITEM', '')),
-                    'Código': safe_str(row.get('COD_ITEM', '')),
-                    'Descrição': safe_str(row.get('DESCR_COMPL', '')),
-                    'Quantidade': safe_float(row.get('QTD')),
-                    'Unidade': safe_str(row.get('UNID', '')),
-                    'Valor': safe_float(row.get('VL_ITEM')),
-                    'CST': safe_str(row.get('CST_ICMS', '')),
-                    'CFOP': safe_str(row.get('CFOP', '')),
-                    'BC ICMS': safe_float(row.get('VL_BC_ICMS')),
-                    'Alíquota': safe_float(row.get('ALIQ_ICMS')),
-                    'ICMS': safe_float(row.get('VL_ICMS'))
-                })
-    
-    if items_data:
-        df_items = pd.DataFrame(items_data)
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            filter_cst = st.multiselect(
-                "CST:",
-                options=sorted(df_items['CST'].unique()),
-                default=[]
-            )
-        
-        with col2:
-            filter_cfop = st.multiselect(
-                "CFOP:",
-                options=sorted(df_items['CFOP'].unique()),
-                default=[]
-            )
-        
-        with col3:
-            has_issues = st.checkbox("Apenas itens com problemas")
-        
-        with col4:
-            search_code = st.text_input("🔍 Código do item:")
-        
-        if filter_cst:
-            df_items = df_items[df_items['CST'].isin(filter_cst)]
-        
-        if filter_cfop:
-            df_items = df_items[df_items['CFOP'].isin(filter_cfop)]
-        
-        if has_issues:
-            df_items = df_items[
-                (df_items['BC ICMS'] == 0) | 
-                (df_items['Alíquota'] == 0) | 
-                (df_items['ICMS'] == 0)
-            ]
-        
-        if search_code:
-            df_items = df_items[df_items['Código'].str.contains(search_code, na=False)]
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Total de Itens", len(df_items))
-        
-        with col2:
-            total_value = df_items['Valor'].sum()
-            st.metric("Valor Total Itens", f"R$ {total_value:,.2f}")
-        
-        with col3:
-            items_no_bc = len(df_items[df_items['BC ICMS'] == 0])
-            st.metric("Itens sem Base Cálculo", items_no_bc, 
-                     delta=f"-{items_no_bc}" if items_no_bc > 0 else "0")
-        
-        st.subheader("Itens")
-        st.dataframe(df_items, use_container_width=True, hide_index=True)
-        
-        st.subheader("📊 Distribuição por CST")
-        cst_dist = df_items.groupby('CST').agg({
-            'Valor': 'sum',
-            'ICMS': 'sum',
-            'Item': 'count'
-        }).reset_index()
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("Quantidade de Itens por CST")
-            st.bar_chart(cst_dist.set_index('CST')['Item'])
-        
-        with col2:
-            st.write("Valor Total por CST")
-            st.bar_chart(cst_dist.set_index('CST')['Valor'])
-    else:
-        st.info("Nenhum item encontrado (registros C170)")
 
-def render_inconsistencies():
-    st.header("⚠️ Inconsistências Fiscais")
-    
-    if not st.session_state.sped_loaded:
-        st.warning("⚠️ Carregue um arquivo SPED primeiro!")
-        return
-    
-    inconsistencies = st.session_state.inconsistencies
-    
-    if not inconsistencies:
-        st.success("✅ Nenhuma inconsistência encontrada!")
-        return
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        severity_filter = st.selectbox(
-            "Severidade:",
-            ["Todas"] + [s.value for s in SeverityLevel]
-        )
-    
-    with col2:
-        blocks_with_issues = list(set(i.block for i in inconsistencies))
-        block_filter = st.selectbox(
-            "Bloco:",
-            ["Todos"] + sorted(blocks_with_issues)
-        )
-    
-    with col3:
-        registries = list(set(i.registry for i in inconsistencies))
-        registry_filter = st.selectbox(
-            "Registro:",
-            ["Todos"] + sorted(registries)
-        )
-    
-    with col4:
-        csts = list(set(i.cst for i in inconsistencies if i.cst))
-        cst_filter = st.selectbox(
-            "CST:",
-            ["Todos"] + sorted(csts)
-        )
-    
-    filtered = inconsistencies
-    
-    if severity_filter != "Todas":
-        filtered = [i for i in filtered if i.severity.value == severity_filter]
-    
-    if block_filter != "Todos":
-        filtered = [i for i in filtered if i.block == block_filter]
-    
-    if registry_filter != "Todos":
-        filtered = [i for i in filtered if i.registry == registry_filter]
-    
-    if cst_filter != "Todos":
-        filtered = [i for i in filtered if i.cst == cst_filter]
-    
-    critical_count = sum(1 for i in filtered if i.severity == SeverityLevel.CRITICA)
-    warning_count = sum(1 for i in filtered if i.severity == SeverityLevel.AVISO)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total Encontradas", len(filtered))
-    
-    with col2:
-        st.metric("Críticas", critical_count)
-    
-    with col3:
-        st.metric("Avisos", warning_count)
-    
-    st.markdown("---")
-    
-    for i, inc in enumerate(filtered):
-        if inc.severity == SeverityLevel.CRITICA:
-            alert_class = "alert-critical"
-        elif inc.severity == SeverityLevel.AVISO:
-            alert_class = "alert-warning"
-        else:
-            alert_class = "alert-success"
-        
-        col1, col2 = st.columns([10, 2])
-        
-        with col1:
-            st.markdown(f"""
-            <div class="{alert_class}">
-                <strong>[{inc.severity.value}] {inc.registry} - {inc.field}</strong><br>
-                {inc.description}<br>
-                <small>
-                Bloco: {inc.block} | 
-                CST: {inc.cst or 'N/A'} | 
-                CFOP: {inc.cfop or 'N/A'} | 
-                Atual: {inc.current_value} | 
-                Esperado: {inc.expected_value or 'N/A'}
-                {f'| Sugestão: {inc.suggested_correction}' if inc.suggested_correction else ''}
-                </small>
-            </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            if inc.can_auto_correct:
-                if st.button(f"🔧 Corrigir", key=f"correct_{i}"):
-                    success, message, _ = st.session_state.correction_service.correct_inconsistency(
-                        inc, st.session_state.blocks_data
-                    )
-                    if success:
-                        st.success(message)
-                        st.session_state.corrections_applied.append(inc.id)
-                        st.rerun()
-                    else:
-                        st.error(message)
-    
-    st.markdown("---")
-    st.subheader("🔧 Ações em Massa")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        auto_correctable = [i for i in filtered if i.can_auto_correct]
-        if st.button(f"🔧 Corrigir {len(auto_correctable)} Automáticas"):
-            result = st.session_state.correction_service.correct_batch(
-                auto_correctable, st.session_state.blocks_data
-            )
-            st.success(f"✅ {result['corrected_count']} correções aplicadas!")
-            st.rerun()
-    
-    with col2:
-        if st.button("🔄 Revalidar"):
-            validator = FiscalValidator(st.session_state.rule_engine.to_dict())
-            st.session_state.inconsistencies = validator.validate(
-                st.session_state.blocks_data
-            )
-            st.rerun()
-    
-    with col3:
-        csv_data = ExportService().export_csv(
-            [inc.to_dict() for inc in filtered]
-        )
-        st.download_button(
-            "📥 Exportar CSV",
-            csv_data,
-            "inconsistencias.csv",
-            "text/csv"
-        )
-
-def render_mass_correction():
-    st.header("🔧 Correções em Massa")
-    
-    if not st.session_state.sped_loaded:
-        st.warning("⚠️ Carregue um arquivo SPED primeiro!")
-        return
-    
-    st.markdown("""
-    ### Configuração da Correção em Massa
-    Aplique correções em lote baseadas em filtros específicos.
-    """)
-    
-    st.subheader("1️⃣ Filtros de Seleção")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        block_filter = st.selectbox(
-            "Bloco:",
-            ["C"] + list(st.session_state.blocks_data.keys()),
-            key="mass_block"
-        )
-    
-    with col2:
-        registry_filter = st.selectbox(
-            "Registro:",
-            ["C170", "C190", "C100"],
-            key="mass_registry"
-        )
-    
-    with col3:
-        operation_filter = st.selectbox(
-            "Tipo de Operação:",
-            ["Todas", "Entrada", "Saída"],
-            key="mass_operation"
-        )
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        cst_filter = st.text_input("CST específico:", "", key="mass_cst",
-                                  help="Deixe em branco para todos")
-    
-    with col2:
-        cfop_filter = st.text_input("CFOP (início):", "", key="mass_cfop",
-                                   help="Ex: 5 para saídas, 6 para interestadual")
-    
-    with col3:
-        field_to_correct = st.selectbox(
-            "Campo a Corrigir:",
-            ["VL_BC_ICMS", "ALIQ_ICMS", "VL_ICMS"],
-            key="mass_field"
-        )
-    
-    st.markdown("---")
-    
-    st.subheader("2️⃣ Configuração da Correção")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        correction_type = st.radio(
-            "Tipo de Correção:",
-            ["Valor Fixo", "Fórmula", "Regra Tributária"],
-            key="mass_correction_type"
-        )
-    
-    with col2:
-        if correction_type == "Valor Fixo":
-            fixed_value = st.text_input("Valor:", "0.00", key="mass_fixed_value")
-            st.caption("Valor será aplicado a todos os registros filtrados")
-        
-        elif correction_type == "Fórmula":
-            formula = st.selectbox(
-                "Fórmula:",
-                ["base * aliquot / 100", "item_value * aliquot / 100"],
-                key="mass_formula"
-            )
-            st.caption("O sistema recalculará o campo automaticamente")
-        
-        elif correction_type == "Regra Tributária":
-            rule_id = st.selectbox(
-                "Regra:",
-                list(st.session_state.rule_engine.rules.keys()),
-                key="mass_rule",
-                format_func=lambda x: f"{x} - {st.session_state.rule_engine.rules[x].description}"
-            )
-    
-    st.markdown("---")
-    
-    st.subheader("3️⃣ Preview")
-    
-    if st.button("🔍 Visualizar Registros Afetados"):
-        affected_count = 0
-        if block_filter in st.session_state.blocks_data:
-            df = st.session_state.blocks_data[block_filter]
-            if 'register' in df.columns:
-                df_filtered = df[df['register'] == registry_filter]
-                
-                if cst_filter and 'CST_ICMS' in df_filtered.columns:
-                    df_filtered = df_filtered[df_filtered['CST_ICMS'] == cst_filter]
-                
-                if cfop_filter and 'CFOP' in df_filtered.columns:
-                    df_filtered = df_filtered[df_filtered['CFOP'].str.startswith(cfop_filter, na=False)]
-                
-                affected_count = len(df_filtered)
-        
-        st.info(f"📊 {affected_count} registros serão afetados")
-        
-        if affected_count > 0:
-            st.warning("⚠️ Esta ação não pode ser desfeita. Confirme antes de aplicar.")
-            
-            if st.button("✅ Confirmar e Aplicar Correção"):
-                correction_config = {
-                    'field': field_to_correct,
-                    'type': 'fixed' if correction_type == 'Valor Fixo' else 'formula',
-                    'value': fixed_value if correction_type == 'Valor Fixo' else None,
-                    'formula': formula if correction_type == 'Fórmula' else None,
-                    'description': f"Correção em massa: {field_to_correct}"
-                }
-                
-                filters = {
-                    'block': block_filter,
-                    'registry': registry_filter,
-                    'cst': cst_filter if cst_filter else None,
-                    'cfop': cfop_filter if cfop_filter else None
-                }
-                
-                result = st.session_state.correction_service.apply_mass_correction(
-                    filters, correction_config, st.session_state.blocks_data
-                )
-                
-                if result['success']:
-                    st.session_state.blocks_data = result['updated_blocks']
-                    st.success(f"✅ {result['affected_records']} registros corrigidos!")
-                    
-                    validator = FiscalValidator(st.session_state.rule_engine.to_dict())
-                    st.session_state.inconsistencies = validator.validate(
-                        st.session_state.blocks_data
-                    )
-                    
-                    st.rerun()
-                else:
-                    st.error("❌ Erro ao aplicar correção")
-
-def render_editor():
-    st.header("✏️ Editor Manual de Registros")
-    
-    if not st.session_state.sped_loaded:
-        st.warning("⚠️ Carregue um arquivo SPED primeiro!")
-        return
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        edit_block = st.selectbox(
-            "Bloco:",
-            list(st.session_state.blocks_data.keys()),
-            key="editor_block"
-        )
-    
-    with col2:
-        if edit_block and edit_block in st.session_state.blocks_data:
-            df = st.session_state.blocks_data[edit_block]
-            if 'register' in df.columns:
-                registers = sorted(df['register'].unique())
-                edit_register = st.selectbox(
-                    "Registro:",
-                    registers,
-                    key="editor_register"
-                )
-    
-    with col3:
-        if edit_block in st.session_state.blocks_data:
-            df = st.session_state.blocks_data[edit_block]
-            max_records = len(df)
-            record_index = st.number_input(
-                "Índice do Registro:",
-                0, max_records-1, 0,
-                key="editor_index"
-            )
-    
-    if edit_block and edit_register:
-        df = st.session_state.blocks_data[edit_block]
-        register_df = df[df['register'] == edit_register]
-        
-        if not register_df.empty and record_index < len(register_df):
-            selected_record = register_df.iloc[record_index]
-            
-            st.markdown("---")
-            st.subheader(f"Editando: Bloco {edit_block} / {edit_register}")
-            
-            editable_fields = [col for col in register_df.columns 
-                             if col not in ['line_number', 'block', 'register', 'original_line', 'fields']]
-            
-            edited_values = {}
-            
-            for field in editable_fields:
-                current_value = selected_record.get(field, '')
-                
-                col1, col2, col3 = st.columns([3, 4, 3])
-                
-                with col1:
-                    st.write(f"**{field}**")
-                
-                with col2:
-                    new_value = st.text_input(
-                        f"Valor {field}",
-                        value=str(current_value) if pd.notna(current_value) else '',
-                        key=f"edit_{field}",
-                        label_visibility='collapsed'
-                    )
-                    edited_values[field] = new_value
-                
-                with col3:
-                    if new_value != str(current_value):
-                        st.markdown(f"""
-                        <span class="original-value">Original: {current_value}</span><br>
-                        <span class="new-value">Novo: {new_value}</span>
-                        """, unsafe_allow_html=True)
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                if st.button("💾 Salvar Alterações", key="save_edit"):
-                    for field, value in edited_values.items():
-                        if value != str(selected_record.get(field, '')):
-                            audit_entry = AuditEntry(
-                                timestamp=datetime.now(),
-                                user='Analista',
-                                action='manual_edit',
-                                block=edit_block,
-                                registry=edit_register,
-                                field=field,
-                                old_value=selected_record.get(field),
-                                new_value=value,
-                                reason='Edição manual'
-                            )
-                            st.session_state.audit_log.append(audit_entry)
-                            
-                            idx = register_df.index[record_index]
-                            st.session_state.blocks_data[edit_block].at[idx, field] = value
-                    
-                    st.success("✅ Alterações salvas!")
-                    
-                    validator = FiscalValidator(st.session_state.rule_engine.to_dict())
-                    st.session_state.inconsistencies = validator.validate(
-                        st.session_state.blocks_data
-                    )
-                    
-                    st.rerun()
-            
-            with col2:
-                if st.button("↩️ Desfazer", key="undo_edit"):
-                    st.rerun()
-            
-            with col3:
-                if st.button("🔄 Restaurar Original", key="restore_edit"):
-                    st.info("Funcionalidade de restauração implementada")
-            
-            with col4:
-                if st.button("📋 Copiar Registro", key="copy_record"):
-                    st.info("Registro copiado para área de transferência")
-
-def render_export():
-    st.header("📤 Exportação de Arquivos")
-    
-    if not st.session_state.sped_loaded:
-        st.warning("⚠️ Carregue um arquivo SPED primeiro!")
-        return
-    
-    tab1, tab2, tab3 = st.tabs(["📄 SPED Corrigido", "📊 Relatórios", "📈 Resumo"])
-    
-    with tab1:
-        st.subheader("Exportar Arquivo SPED Corrigido")
-        
-        all_blocks = list(st.session_state.blocks_data.keys())
-        selected_blocks = st.multiselect(
-            "Blocos para exportar:",
-            all_blocks,
-            default=all_blocks,
-            help="Selecione os blocos que deseja incluir no arquivo exportado"
-        )
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            include_header = st.checkbox("Incluir cabeçalho completo", value=True)
-            validate_before_export = st.checkbox("Validar antes de exportar", value=True)
-        
-        with col2:
-            export_format = st.radio(
-                "Formato:",
-                ["TXT (SPED Padrão)", "TXT (com marcações)"]
-            )
-        
-        if st.button("🔨 Gerar Arquivo SPED"):
-            if validate_before_export:
-                validator = FiscalValidator(st.session_state.rule_engine.to_dict())
-                remaining_issues = validator.validate(st.session_state.blocks_data)
-                
-                if remaining_issues:
-                    critical = [i for i in remaining_issues if i.severity == SeverityLevel.CRITICA]
-                    if critical:
-                        st.error(f"❌ Ainda existem {len(critical)} inconsistências críticas!")
-                        st.warning("Corrija as inconsistências críticas antes de exportar")
-                        
-                        for inc in critical[:5]:
-                            st.markdown(f"- {inc.description}")
-                    else:
-                        st.warning(f"⚠️ {len(remaining_issues)} avisos pendentes. Deseja continuar?")
-                        if st.button("✅ Sim, exportar mesmo assim"):
-                            _perform_sped_export(selected_blocks)
-                else:
-                    st.success("✅ Nenhuma inconsistência! Arquivo pronto para exportação")
-                    _perform_sped_export(selected_blocks)
-            else:
-                _perform_sped_export(selected_blocks)
-    
-    with tab2:
-        st.subheader("Relatórios")
-        
-        report_type = st.selectbox(
-            "Tipo de Relatório:",
-            [
-                "Relatório Completo (Excel)",
-                "Inconsistências (CSV)",
-                "Registros Alterados (CSV)",
-                "Resumo Gerencial (Excel)"
-            ]
-        )
-        
-        if st.button("📊 Gerar Relatório"):
-            if report_type == "Relatório Completo (Excel)":
-                excel_file = st.session_state.export_service.export_excel_report(
-                    st.session_state.inconsistencies,
-                    st.session_state.corrections_applied,
-                    st.session_state.audit_log,
-                    st.session_state.inconsistency_stats
-                )
-                
-                st.download_button(
-                    "📥 Download Relatório Excel",
-                    excel_file,
-                    f"relatorio_sped_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            
-            elif report_type == "Inconsistências (CSV)":
-                csv_data = ExportService().export_csv(
-                    [inc.to_dict() for inc in st.session_state.inconsistencies]
-                )
-                
-                st.download_button(
-                    "📥 Download CSV",
-                    csv_data,
-                    "inconsistencias.csv",
-                    "text/csv"
-                )
-            
-            elif report_type == "Registros Alterados (CSV)":
-                audit_data = [entry.to_dict() for entry in st.session_state.audit_log]
-                csv_data = ExportService().export_csv(audit_data)
-                
-                st.download_button(
-                    "📥 Download CSV",
-                    csv_data,
-                    "registros_alterados.csv",
-                    "text/csv"
-                )
-    
-    with tab3:
-        st.subheader("Resumo da Sessão")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write("**Informações do Arquivo:**")
-            metadata = st.session_state.metadata
-            for key, value in metadata.items():
-                if key in ['cnpj', 'ie', 'nome', 'periodo_inicial', 'periodo_final']:
-                    st.write(f"- {key}: {value}")
-        
-        with col2:
-            st.write("**Estatísticas:**")
-            st.write(f"- Total de blocos: {len(st.session_state.blocks_data)}")
-            st.write(f"- Inconsistências encontradas: {len(st.session_state.inconsistencies)}")
-            st.write(f"- Correções aplicadas: {len(st.session_state.corrections_applied)}")
-            st.write(f"- Registros alterados: {len(st.session_state.audit_log)}")
-
-def _perform_sped_export(selected_blocks):
+def _parse_decimal_br(valor) -> Optional[float]:
+    """Converte string BRL ('1.234,56') ou float para float Python. Retorna None se inválido."""
+    if valor is None:
+        return None
+    if isinstance(valor, (int, float)):
+        import math
+        return None if (isinstance(valor, float) and math.isnan(valor)) else float(valor)
+    s = str(valor).strip().replace(".", "").replace(",", ".")
+    if not s:
+        return None
     try:
-        blocks_to_export = {
-            k: v for k, v in st.session_state.blocks_data.items() 
-            if k in selected_blocks
-        }
-        
-        sped_content = st.session_state.export_service.export_sped(
-            blocks_to_export,
-            st.session_state.metadata
-        )
-        
-        if sped_content:
-            cnpj = st.session_state.metadata.get('cnpj', '00000000000000')
-            period = st.session_state.metadata.get('periodo_inicial', '')
-            filename = f"SPED_{cnpj}_{period.replace('/', '')}_CORRIGIDO.txt"
-            
-            st.download_button(
-                label="📥 Download SPED Corrigido",
-                data=sped_content,
-                file_name=filename,
-                mime="text/plain"
-            )
-            
-            st.success(f"✅ Arquivo gerado com sucesso!")
-            st.info(f"📊 {len(sped_content.split(chr(10)))} linhas exportadas")
-            
-            with st.expander("👀 Preview do Arquivo (primeiras 50 linhas)"):
-                preview = '\n'.join(sped_content.split('\n')[:50])
-                st.code(preview, language='text')
-        else:
-            st.error("❌ Erro ao gerar arquivo SPED")
-    
-    except Exception as e:
-        st.error(f"❌ Erro na exportação: {str(e)}")
+        return float(Decimal(s))
+    except (InvalidOperation, ValueError):
+        return None
 
-def render_audit_log():
-    st.header("📜 Log de Auditoria")
-    
-    if not st.session_state.audit_log:
-        st.info("Nenhuma ação registrada no log de auditoria")
+
+def _float_para_sped(valor: float) -> str:
+    """float → string SPED com vírgula decimal e 2 casas."""
+    d = Decimal(str(valor)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return str(d).replace(".", ",")
+
+
+def _formatar_brl(valor: Optional[float]) -> str:
+    """float → string formatada BRL para exibição."""
+    if valor is None:
+        return "—"
+    try:
+        d = Decimal(str(valor)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        inteiro, dec = str(d).split(".")
+        fmt = ""
+        for i, c in enumerate(reversed(inteiro)):
+            if i and i % 3 == 0 and c != "-":
+                fmt = "." + fmt
+            fmt = c + fmt
+        return f"R$ {fmt},{dec}"
+    except Exception:
+        return str(valor)
+
+
+def _enriquecer(row: dict, linha: LinhaRegistro) -> None:
+    """Adiciona colunas com nomes semânticos para registros mapeados."""
+    mapa = MAPA_CAMPOS.get(linha.registro)
+    if not mapa:
         return
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        action_filter = st.selectbox(
-            "Ação:",
-            ["Todas"] + list(set(entry.action for entry in st.session_state.audit_log))
-        )
-    
-    with col2:
-        block_filter = st.selectbox(
-            "Bloco:",
-            ["Todos"] + list(set(entry.block for entry in st.session_state.audit_log))
-        )
-    
-    with col3:
-        date_filter = st.date_input("Data:", value=None)
-    
-    filtered_logs = st.session_state.audit_log
-    
-    if action_filter != "Todas":
-        filtered_logs = [log for log in filtered_logs if log.action == action_filter]
-    
-    if block_filter != "Todos":
-        filtered_logs = [log for log in filtered_logs if log.block == block_filter]
-    
-    if date_filter:
-        filtered_logs = [
-            log for log in filtered_logs 
-            if log.timestamp.date() == date_filter
-        ]
-    
-    st.metric("Entradas no Log", len(filtered_logs))
-    
-    if filtered_logs:
-        audit_df = pd.DataFrame([{
-            'Data/Hora': entry.timestamp.strftime('%d/%m/%Y %H:%M:%S'),
-            'Usuário': entry.user,
-            'Ação': entry.action,
-            'Bloco': entry.block,
-            'Registro': entry.registry,
-            'Campo': entry.field,
-            'Valor Anterior': str(entry.old_value),
-            'Valor Novo': str(entry.new_value),
-            'Motivo': entry.reason
-        } for entry in filtered_logs])
-        
-        st.dataframe(audit_df, use_container_width=True, hide_index=True)
-        
-        csv_data = ExportService().export_csv(
-            [entry.to_dict() for entry in filtered_logs]
-        )
-        
-        st.download_button(
-            "📥 Download Log de Auditoria (CSV)",
-            csv_data,
-            f"audit_log_{datetime.now().strftime('%Y%m%d')}.csv",
-            "text/csv"
-        )
+    for nome, idx in mapa.items():
+        row[nome] = linha.get(idx)
 
-def render_rules_config():
-    st.header("⚙️ Configuração de Regras Tributárias")
-    
-    st.info("""
-    ### Motor de Regras Tributárias
-    Configure as regras que determinam como o sistema valida e corrige automaticamente
-    os campos tributários dos arquivos SPED.
-    """)
-    
-    st.subheader("Regras Configuradas")
-    
-    rules = st.session_state.rule_engine.rules
-    
-    if rules:
-        rules_data = []
-        for rule_id, rule in rules.items():
-            rules_data.append({
-                'ID': rule_id,
-                'CST': rule.cst,
-                'CFOP': rule.cfop_pattern,
-                'Operação': rule.operation_type.value,
-                'Exige Base': 'Sim' if rule.requires_base else 'Não',
-                'Exige Alíquota': 'Sim' if rule.requires_aliquot else 'Não',
-                'Exige Imposto': 'Sim' if rule.requires_tax_value else 'Não',
-                'Alíquota Padrão': f"{rule.default_aliquot}%" if rule.default_aliquot else 'N/A',
-                'Ativa': 'Sim' if rule.is_active else 'Não',
-                'Descrição': rule.description
-            })
-        
-        df_rules = pd.DataFrame(rules_data)
-        st.dataframe(df_rules, use_container_width=True, hide_index=True)
-    
-    st.markdown("---")
-    st.subheader("➕ Adicionar Nova Regra")
-    
-    with st.form("new_rule_form"):
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            new_rule_id = st.text_input("ID da Regra:", "R000")
-            new_cst = st.selectbox("CST:", list(CST_ICMS_CODES.keys()))
-            new_operation = st.selectbox(
-                "Operação:", 
-                [op.value for op in OperationType]
-            )
-        
-        with col2:
-            new_cfop = st.text_input("Padrão CFOP:", "*", 
-                                    help="Use * para todos ou prefixo (ex: 5, 6)")
-            requires_base = st.checkbox("Exige Base de Cálculo", value=True)
-            requires_aliquot = st.checkbox("Exige Alíquota", value=True)
-        
-        with col3:
-            requires_tax = st.checkbox("Exige Valor do Imposto", value=True)
-            default_aliquot = st.number_input(
-                "Alíquota Padrão (%):", 
-                0.0, 100.0, 18.0
-            )
-            new_active = st.checkbox("Ativa", value=True)
-        
-        new_description = st.text_input("Descrição:", "")
-        
-        if st.form_submit_button("💾 Salvar Regra"):
-            new_rule = TaxRule(
-                rule_id=new_rule_id,
-                cst=new_cst,
-                cfop_pattern=new_cfop,
-                operation_type=OperationType(new_operation),
-                requires_base=requires_base,
-                requires_aliquot=requires_aliquot,
-                requires_tax_value=requires_tax,
-                default_aliquot=default_aliquot,
-                is_active=new_active,
-                description=new_description
-            )
-            
-            if st.session_state.rule_engine.add_rule(new_rule):
-                st.success(f"✅ Regra {new_rule_id} adicionada!")
-                st.rerun()
+
+def parse_sped(conteudo_bytes: bytes) -> ResultadoParser:
+    """
+    Parser principal.
+    Tokeniza cada linha por '|', identifica bloco/registro,
+    monta DataFrame com colunas semânticas e detecta tipo de escrituração.
+    """
+    texto = _decode_bytes(conteudo_bytes)
+    linhas_raw = texto.splitlines()
+    erros: list[str] = []
+    linhas: list[LinhaRegistro] = []
+
+    for i, raw in enumerate(linhas_raw, 1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        if not (raw.startswith("|") and raw.endswith("|")):
+            erros.append(f"L{i}: formato inválido — {raw[:60]}")
+            continue
+        campos = raw[1:-1].split("|")
+        if not campos or not campos[0].strip():
+            erros.append(f"L{i}: tipo de registro vazio")
+            continue
+        registro = campos[0].strip().upper()
+        bloco = registro[0] if registro else "?"
+        linhas.append(LinhaRegistro(i, bloco, registro, campos, raw))
+
+    # Metadados do 0000
+    meta = MetadadosArquivo()
+    for l in linhas:
+        if l.registro == "0000":
+            meta.periodo_apuracao = f"{l.get(3)} a {l.get(4)}"
+            meta.nome_empresa = l.get(5)
+            meta.cnpj = l.get(6)
+            meta.uf = l.get(8)
+            meta.ie = l.get(9)
+            meta.cod_municipio = l.get(10)
+            meta.ind_perfil = l.get(13)
+            break
+
+    meta.total_linhas = len(linhas)
+    meta.blocos_presentes = sorted(set(l.bloco for l in linhas))
+
+    # Tipo de escrituração
+    blocos = set(meta.blocos_presentes)
+    if blocos & {"E", "G", "K", "H"}:
+        tipo = "EFD_ICMS_IPI"
+    elif blocos & {"M", "P", "F"}:
+        tipo = "EFD_CONTRIBUICOES"
+    else:
+        tipo = "EFD_ICMS_IPI"
+
+    # DataFrame
+    registros = []
+    for l in linhas:
+        r: dict = {
+            "numero_linha": l.numero_linha,
+            "bloco": l.bloco,
+            "registro": l.registro,
+            "linha_original": l.linha_original,
+        }
+        r.update({f"campo_{i:02d}": l.get(i) for i in range(min(len(l.campos), 50))})
+        _enriquecer(r, l)
+        registros.append(r)
+
+    df = pd.DataFrame(registros)
+
+    # Converter campos numéricos
+    for col in CAMPOS_NUMERICOS:
+        if col in df.columns:
+            df[col] = df[col].apply(_parse_decimal_br)
+
+    return ResultadoParser(meta, linhas, df, erros, tipo)
+
+
+def reconstruir_sped(linhas: list[LinhaRegistro]) -> bytes:
+    """Reconstrói arquivo SPED a partir das LinhaRegistro (possivelmente editadas)."""
+    ordenadas = sorted(linhas, key=lambda l: l.numero_linha)
+    return "".join(l.to_sped() for l in ordenadas).encode("utf-8")
+
+
+def sincronizar_df_para_linhas(df: pd.DataFrame, linhas: list[LinhaRegistro]) -> list[LinhaRegistro]:
+    """Propaga alterações do DataFrame de volta para LinhaRegistro."""
+    mapa = {l.numero_linha: l for l in linhas}
+    for _, row in df.iterrows():
+        num = row.get("numero_linha")
+        if num not in mapa:
+            continue
+        linha = mapa[num]
+        campos_reg = MAPA_CAMPOS.get(linha.registro, {})
+        for nome_campo, idx in campos_reg.items():
+            if nome_campo not in row or pd.isna(row[nome_campo]):
+                continue
+            val = row[nome_campo]
+            if isinstance(val, float):
+                val = _float_para_sped(val)
+            linha.set(idx, str(val))
+    return list(mapa.values())
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  MOTOR DE REGRAS  ████████████████████████████════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+ARQUIVO_REGRAS = "sped_regras_fiscais.json"
+
+
+def carregar_regras() -> list[RegraFiscal]:
+    if os.path.exists(ARQUIVO_REGRAS):
+        try:
+            with open(ARQUIVO_REGRAS, encoding="utf-8") as f:
+                dados = json.load(f)
+            return [RegraFiscal(**d) for d in dados]
+        except Exception:
+            pass
+    return list(REGRAS_PADRAO)
+
+
+def salvar_regras(regras: list[RegraFiscal]) -> None:
+    with open(ARQUIVO_REGRAS, "w", encoding="utf-8") as f:
+        json.dump([asdict(r) for r in regras], f, ensure_ascii=False, indent=2)
+
+
+def buscar_regra(
+    regras: list[RegraFiscal], cst: str, cfop: str, ind_oper: str = "*"
+) -> Optional[RegraFiscal]:
+    """
+    Matching com prioridade: mais específico vence.
+    Pontuação: CST exato +2, CFOP exato +2, operação exata +1.
+    """
+    candidatas = [
+        r for r in regras
+        if r.ativa and r.match_cst(cst) and r.match_cfop(cfop) and r.match_oper(ind_oper)
+    ]
+    if not candidatas:
+        return None
+
+    def score(r: RegraFiscal) -> int:
+        s = 0
+        if r.cst_icms != "*":
+            s += 2
+        if r.cfop != "*":
+            s += 2
+        if r.ind_oper != "*":
+            s += 1
+        return s
+
+    return max(candidatas, key=score)
+
+
+def calcular_imposto(regra: RegraFiscal, base: float, aliquota: float) -> float:
+    """Aplica fórmula da regra com precisão Decimal."""
+    if regra.formula == "zero":
+        return 0.0
+    resultado = Decimal(str(base)) * Decimal(str(aliquota)) / Decimal("100")
+    return float(resultado.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  VALIDADOR FISCAL  ███████████████════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+def validar(df: pd.DataFrame, regras: list[RegraFiscal]) -> pd.DataFrame:
+    """
+    Executa todas as validações fiscais.
+    Retorna DataFrame de inconsistências com colunas padronizadas.
+    """
+    inc: list[dict] = []
+
+    # ------------------------------------------------------------------
+    # A) Validação C170 — itens de NF-e
+    # ------------------------------------------------------------------
+    df_c170 = df[df["registro"] == "C170"].copy()
+    for _, row in df_c170.iterrows():
+        cst  = str(row.get("CST_ICMS", "") or "").strip()
+        cfop = str(row.get("CFOP", "") or "").strip()
+        nl   = int(row.get("numero_linha", 0))
+
+        base    = _parse_decimal_br(row.get("VL_BC_ICMS"))
+        aliq    = _parse_decimal_br(row.get("ALIQ_ICMS"))
+        vl_icms = _parse_decimal_br(row.get("VL_ICMS"))
+        vl_item = _parse_decimal_br(row.get("VL_ITEM"))
+
+        if not cst:
+            inc.append(_inc(nl, "C170", "C", "CAMPO_AUSENTE", "CRITICA",
+                           "CST_ICMS", "CST_ICMS ausente no item", "", "", cst, cfop))
+            continue
+
+        regra = buscar_regra(regras, cst, cfop)
+        sev   = regra.criticidade.upper() if regra else "AVISO"
+
+        # --- base ausente em CST tributado ---
+        if regra and regra.exige_base and (base is None or base == 0.0):
+            sug = _float_para_sped(vl_item) if vl_item else ""
+            inc.append(_inc(nl, "C170", "C", "CST_SEM_BASE", sev,
+                           "VL_BC_ICMS",
+                           f"CST {cst} exige base de cálculo — ausente/zerada",
+                           str(row.get("VL_BC_ICMS", "")), sug, cst, cfop,
+                           regra_id=regra.id if regra else ""))
+
+        # --- alíquota ausente ---
+        if regra and regra.exige_aliquota and (aliq is None or aliq == 0.0):
+            sug = _float_para_sped(regra.aliquota_padrao) if regra.aliquota_padrao else ""
+            inc.append(_inc(nl, "C170", "C", "CST_SEM_ALIQUOTA", sev,
+                           "ALIQ_ICMS",
+                           f"CST {cst} exige alíquota — ausente/zerada",
+                           str(row.get("ALIQ_ICMS", "")), sug, cst, cfop,
+                           regra_id=regra.id if regra else ""))
+
+        # --- imposto ausente ---
+        if regra and regra.exige_valor_icms and (vl_icms is None or vl_icms == 0.0):
+            b_sug = base or vl_item or 0.0
+            a_sug = aliq or (regra.aliquota_padrao or 0.0)
+            imp_calc = calcular_imposto(regra, b_sug, a_sug) if regra else 0.0
+            sug = _float_para_sped(imp_calc) if imp_calc else ""
+            inc.append(_inc(nl, "C170", "C", "CST_SEM_IMPOSTO", sev,
+                           "VL_ICMS",
+                           f"CST {cst} exige VL_ICMS — ausente/zerado (sugerido: {sug})",
+                           str(row.get("VL_ICMS", "")), sug, cst, cfop,
+                           regra_id=regra.id if regra else ""))
+
+        # --- imposto indevido em isento ---
+        if regra and not regra.exige_valor_icms and vl_icms and vl_icms > 0:
+            inc.append(_inc(nl, "C170", "C", "IMPOSTO_INDEVIDO", "AVISO",
+                           "VL_ICMS",
+                           f"CST {cst} não deve ter VL_ICMS — campo preenchido indevidamente",
+                           _float_para_sped(vl_icms), "0", cst, cfop,
+                           regra_id=regra.id if regra else ""))
+
+        # --- divergência de cálculo ---
+        if base and aliq and vl_icms is not None and regra:
+            if regra.formula == "base * aliq / 100":
+                esperado = calcular_imposto(regra, base, aliq)
+                if abs(esperado - vl_icms) > 0.05:
+                    inc.append(_inc(nl, "C170", "C", "DIVERGENCIA_CALCULO", "AVISO",
+                                   "VL_ICMS",
+                                   f"ICMS calculado ({_formatar_brl(esperado)}) ≠ registrado ({_formatar_brl(vl_icms)})",
+                                   _float_para_sped(vl_icms), _float_para_sped(esperado),
+                                   cst, cfop, regra_id=regra.id if regra else ""))
+
+    # ------------------------------------------------------------------
+    # B) Divergência de totais C100 vs soma C170
+    # ------------------------------------------------------------------
+    df_docs = df[df["registro"].isin(["C100", "C170"])].sort_values("numero_linha")
+    c100_atual = None
+    c100_nl    = 0
+    acum_icms  = 0.0
+
+    for _, row in df_docs.iterrows():
+        if row["registro"] == "C100":
+            if c100_atual is not None:
+                vl_doc = _parse_decimal_br(c100_atual.get("VL_ICMS")) or 0.0
+                if abs(acum_icms - vl_doc) > 0.10:
+                    inc.append(_inc(c100_nl, "C100", "C", "DIVERGENCIA_TOTAL", "CRITICA",
+                                   "VL_ICMS",
+                                   f"Total C100 ({_formatar_brl(vl_doc)}) ≠ soma C170 ({_formatar_brl(acum_icms)})",
+                                   _float_para_sped(vl_doc), _float_para_sped(acum_icms),
+                                   num_doc=str(c100_atual.get("NUM_DOC", ""))))
+            c100_atual = row
+            c100_nl    = int(row["numero_linha"])
+            acum_icms  = 0.0
+        elif row["registro"] == "C170" and c100_atual is not None:
+            acum_icms += _parse_decimal_br(row.get("VL_ICMS")) or 0.0
+
+    # ------------------------------------------------------------------
+    # C) C190 sem base para CST tributado
+    # ------------------------------------------------------------------
+    df_c190 = df[df["registro"] == "C190"]
+    for _, row in df_c190.iterrows():
+        cst  = str(row.get("CST_ICMS", "") or "").strip()
+        cfop = str(row.get("CFOP", "") or "").strip()
+        nl   = int(row.get("numero_linha", 0))
+        regra = buscar_regra(regras, cst, cfop)
+        if regra and regra.exige_base:
+            bc = _parse_decimal_br(row.get("VL_BC_ICMS"))
+            if bc is None or bc == 0:
+                inc.append(_inc(nl, "C190", "C", "C190_SEM_BASE", "AVISO",
+                               "VL_BC_ICMS",
+                               f"C190 CST {cst}/CFOP {cfop} sem base de cálculo",
+                               "", str(row.get("VL_OPR", "")), cst, cfop))
+
+    # ------------------------------------------------------------------
+    # D) Integridade de blocos (abertura e fechamento)
+    # ------------------------------------------------------------------
+    blocos_presentes = df["bloco"].unique()
+    for bloco in blocos_presentes:
+        if bloco in ("?",):
+            continue
+        for sufixo, tipo_err in [("001", "BLOCO_SEM_ABERTURA"), ("990", "BLOCO_SEM_FECHAMENTO")]:
+            reg_esperado = f"{bloco}{sufixo}"
+            if df[df["registro"] == reg_esperado].empty:
+                inc.append(_inc(0, reg_esperado, bloco, tipo_err, "CRITICA",
+                               "registro",
+                               f"Bloco {bloco}: registro {reg_esperado} ausente",
+                               "ausente", ""))
+
+    # ------------------------------------------------------------------
+    # E) Campos obrigatórios no 0000
+    # ------------------------------------------------------------------
+    df0 = df[df["registro"] == "0000"]
+    if df0.empty:
+        inc.append(_inc(0, "0000", "0", "CAMPO_AUSENTE", "CRITICA",
+                       "0000", "Registro de abertura 0000 não encontrado", "ausente", ""))
+    else:
+        row0 = df0.iloc[0]
+        for campo in ("CNPJ", "NOME", "DT_INI", "DT_FIN"):
+            alias = {"DT_INI": "campo_03", "DT_FIN": "campo_04", "NOME": "NOME", "CNPJ": "CNPJ"}
+            val = str(row0.get(campo, row0.get(alias.get(campo, ""), "")) or "").strip()
+            if not val:
+                inc.append(_inc(int(row0.get("numero_linha", 1)), "0000", "0",
+                               "CAMPO_AUSENTE", "CRITICA", campo,
+                               f"Campo {campo} obrigatório ausente no registro 0000", "", ""))
+
+    # ------------------------------------------------------------------
+    # F) Valores negativos inesperados
+    # ------------------------------------------------------------------
+    campos_nao_neg = ["VL_ITEM", "VL_BC_ICMS", "VL_ICMS", "ALIQ_ICMS"]
+    for col in campos_nao_neg:
+        if col not in df_c170.columns:
+            continue
+        neg = df_c170[df_c170[col].apply(lambda x: x is not None and isinstance(x, float) and x < 0)]
+        for _, row in neg.iterrows():
+            inc.append(_inc(int(row.get("numero_linha", 0)), "C170", "C",
+                           "VALOR_NEGATIVO", "AVISO", col,
+                           f"Valor negativo inesperado em {col}: {row[col]:.2f}",
+                           _float_para_sped(row[col]), _float_para_sped(abs(row[col])),
+                           str(row.get("CST_ICMS", "")), str(row.get("CFOP", ""))))
+
+    return pd.DataFrame(inc) if inc else pd.DataFrame()
+
+
+def _inc(
+    numero_linha: int, registro: str, bloco: str,
+    tipo: str, severidade: str, campo: str, descricao: str,
+    valor_atual: str, valor_sugerido: str,
+    cst: str = "", cfop: str = "", num_doc: str = "", regra_id: str = "",
+) -> dict:
+    return {
+        "numero_linha": numero_linha, "bloco": bloco, "registro": registro,
+        "tipo": tipo, "severidade": severidade, "campo_afetado": campo,
+        "descricao": descricao, "valor_atual": valor_atual,
+        "valor_sugerido": valor_sugerido, "cst": cst, "cfop": cfop,
+        "num_doc": num_doc, "regra_aplicada": regra_id, "corrigido": False,
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  EDITOR + AUDITORIA  █████════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+class TrilhaAuditoria:
+    """Log imutável de todas as alterações da sessão."""
+
+    def __init__(self):
+        self._log: list[EntradaAuditoria] = []
+
+    def registrar(
+        self, numero_linha: int, registro: str, bloco: str,
+        campo: str, valor_anterior: str, valor_novo: str,
+        regra: str = "", motivo: str = "", tipo: str = "MANUAL",
+        usuario: str = "analista",
+    ) -> None:
+        self._log.append(EntradaAuditoria(
+            id=str(uuid.uuid4())[:8],
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            usuario=usuario, numero_linha=numero_linha,
+            registro=registro, bloco=bloco, campo=campo,
+            valor_anterior=valor_anterior, valor_novo=valor_novo,
+            regra=regra, motivo=motivo, tipo=tipo,
+        ))
+
+    def to_df(self) -> pd.DataFrame:
+        if not self._log:
+            return pd.DataFrame()
+        return pd.DataFrame([
+            {"ID": e.id, "Data/Hora": e.timestamp, "Usuário": e.usuario,
+             "Linha": e.numero_linha, "Registro": e.registro, "Bloco": e.bloco,
+             "Campo": e.campo, "Valor Anterior": e.valor_anterior,
+             "Valor Novo": e.valor_novo, "Regra": e.regra,
+             "Motivo": e.motivo, "Tipo": e.tipo}
+            for e in self._log
+        ])
+
+    def total(self) -> int:
+        return len(self._log)
+
+
+class EditorSped:
+    """Gerencia o estado do DataFrame com suporte a desfazer e auditoria."""
+
+    def __init__(self, df_original: pd.DataFrame):
+        self._orig = df_original.copy()
+        self._atual = df_original.copy()
+        self._hist: list[pd.DataFrame] = []
+        self.auditoria = TrilhaAuditoria()
+
+    @property
+    def df(self) -> pd.DataFrame:
+        return self._atual
+
+    @property
+    def df_original(self) -> pd.DataFrame:
+        return self._orig
+
+    def get_alterados(self) -> pd.DataFrame:
+        """Linhas que diferem do original."""
+        try:
+            mask = self._atual.ne(self._orig).any(axis=1)
+            return self._atual[mask]
+        except Exception:
+            return pd.DataFrame()
+
+    def editar(
+        self, numero_linha: int, campo: str, valor_novo: str,
+        motivo: str = "", regra: str = "", usuario: str = "analista",
+    ) -> bool:
+        idx = self._atual[self._atual["numero_linha"] == numero_linha].index
+        if idx.empty:
+            return False
+        self._hist.append(self._atual.copy())
+        i = idx[0]
+        row = self._atual.loc[i]
+        val_ant = str(row.get(campo, ""))
+        # Converter para float se coluna numérica, senão manter como object
+        if campo in CAMPOS_NUMERICOS and self._atual[campo].dtype == float:
+            val_num = _parse_decimal_br(valor_novo)
+            self._atual[campo] = self._atual[campo].astype(object)
+            self._atual.at[i, campo] = val_num if val_num is not None else valor_novo
+        else:
+            if campo in self._atual.columns and self._atual[campo].dtype != object:
+                self._atual[campo] = self._atual[campo].astype(object)
+            self._atual.at[i, campo] = valor_novo
+        self.auditoria.registrar(
+            numero_linha, str(row.get("registro", "")), str(row.get("bloco", "")),
+            campo, val_ant, valor_novo, regra, motivo, "MANUAL", usuario,
+        )
+        return True
+
+    def massa(
+        self, numeros_linha: list[int], campo: str, valor: str,
+        motivo: str = "Correção em massa", regra: str = "", usuario: str = "analista",
+    ) -> int:
+        self._hist.append(self._atual.copy())
+        n = 0
+        for nl in numeros_linha:
+            idx = self._atual[self._atual["numero_linha"] == nl].index
+            if idx.empty:
+                continue
+            i = idx[0]
+            row = self._atual.loc[i]
+            ant = str(row.get(campo, ""))
+            if ant == valor:
+                continue
+            if campo in CAMPOS_NUMERICOS and campo in self._atual.columns and self._atual[campo].dtype == float:
+                val_num = _parse_decimal_br(valor)
+                self._atual[campo] = self._atual[campo].astype(object)
+                self._atual.at[i, campo] = val_num if val_num is not None else valor
             else:
-                st.error(f"❌ ID {new_rule_id} já existe!")
-    
-    st.markdown("---")
-    st.subheader("✏️ Editar Regra Existente")
-    
-    rule_to_edit = st.selectbox(
-        "Selecione a regra:",
-        list(rules.keys()),
-        format_func=lambda x: f"{x} - {rules[x].description}"
-    )
-    
-    if rule_to_edit:
-        rule = rules[rule_to_edit]
-        
-        with st.form("edit_rule_form"):
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                edit_active = st.checkbox("Ativa", value=rule.is_active)
-                edit_base = st.checkbox("Exige Base", value=rule.requires_base)
-            
-            with col2:
-                edit_aliquot = st.checkbox("Exige Alíquota", value=rule.requires_aliquot)
-                edit_tax = st.checkbox("Exige Imposto", value=rule.requires_tax_value)
-            
-            with col3:
-                edit_default_aliq = st.number_input(
-                    "Alíquota Padrão:",
-                    0.0, 100.0,
-                    float(rule.default_aliquot) if rule.default_aliquot else 18.0
-                )
-            
-            if st.form_submit_button("💾 Atualizar Regra"):
-                rule.is_active = edit_active
-                rule.requires_base = edit_base
-                rule.requires_aliquot = edit_aliquot
-                rule.requires_tax_value = edit_tax
-                rule.default_aliquot = edit_default_aliq
-                
-                st.success(f"✅ Regra {rule_to_edit} atualizada!")
-                st.rerun()
+                if campo in self._atual.columns and self._atual[campo].dtype != object:
+                    self._atual[campo] = self._atual[campo].astype(object)
+                self._atual.at[i, campo] = valor
+            self.auditoria.registrar(
+                nl, str(row.get("registro", "")), str(row.get("bloco", "")),
+                campo, ant, valor, regra, motivo, "MASSA", usuario,
+            )
+            n += 1
+        return n
 
-# ============================================================================
-# MAIN
-# ============================================================================
+    def recalcular_massa(
+        self, numeros_linha: list[int], regras: list[RegraFiscal],
+        motivo: str = "Recálculo automático", usuario: str = "analista",
+    ) -> int:
+        self._hist.append(self._atual.copy())
+        n = 0
+        for nl in numeros_linha:
+            idx = self._atual[self._atual["numero_linha"] == nl].index
+            if idx.empty:
+                continue
+            i = idx[0]
+            row = self._atual.loc[i]
+            cst  = str(row.get("CST_ICMS", "") or "").strip()
+            cfop = str(row.get("CFOP", "") or "").strip()
+            base = _parse_decimal_br(row.get("VL_BC_ICMS"))
+            aliq = _parse_decimal_br(row.get("ALIQ_ICMS"))
+            if base is None or aliq is None:
+                continue
+            regra = buscar_regra(regras, cst, cfop)
+            if not regra:
+                continue
+            novo = calcular_imposto(regra, base, aliq)
+            ant  = str(row.get("VL_ICMS", ""))
+            self._atual.at[i, "VL_ICMS"] = novo
+            self.auditoria.registrar(
+                nl, str(row.get("registro", "")), str(row.get("bloco", "")),
+                "VL_ICMS", ant, _float_para_sped(novo), regra.id, motivo, "AUTO", usuario,
+            )
+            n += 1
+        return n
+
+    def desfazer(self) -> bool:
+        if not self._hist:
+            return False
+        self._atual = self._hist.pop()
+        return True
+
+    def restaurar(self, numeros_linha: Optional[list[int]] = None) -> None:
+        self._hist.append(self._atual.copy())
+        if numeros_linha:
+            for nl in numeros_linha:
+                ia = self._atual[self._atual["numero_linha"] == nl].index
+                io = self._orig[self._orig["numero_linha"] == nl].index
+                if not ia.empty and not io.empty:
+                    self._atual.loc[ia[0]] = self._orig.loc[io[0]]
+        else:
+            self._atual = self._orig.copy()
+
+    def preview(self, numeros_linha: list[int]) -> pd.DataFrame:
+        rows = []
+        for nl in numeros_linha:
+            a = self._atual[self._atual["numero_linha"] == nl]
+            o = self._orig[self._orig["numero_linha"] == nl]
+            if a.empty or o.empty:
+                continue
+            ra, ro = a.iloc[0], o.iloc[0]
+            for campo in ["VL_BC_ICMS", "ALIQ_ICMS", "VL_ICMS", "VL_ITEM",
+                          "VL_BC_ICMS_ST", "ALIQ_ST", "VL_ICMS_ST"]:
+                if ra.get(campo) != ro.get(campo):
+                    rows.append({
+                        "Linha": nl, "Registro": ra.get("registro", ""),
+                        "Campo": campo, "Original": ro.get(campo),
+                        "Atual": ra.get(campo),
+                    })
+        return pd.DataFrame(rows)
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  EXPORTAÇÕES  ████════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Paleta corporativa
+_COR_HEADER  = "1A3A5C"
+_COR_CRITICA = "C0392B"
+_COR_AVISO   = "B7860D"
+_COR_OK      = "1A7A35"
+_COR_ZEBRA   = "EBF0F7"
+_COR_BRANCO  = "FFFFFF"
+_COR_SUB     = "2C5F8A"
+
+
+def exportar_excel(
+    df_inc: pd.DataFrame, df_alt: pd.DataFrame,
+    df_aud: pd.DataFrame, df_reg: pd.DataFrame,
+    meta: dict,
+) -> bytes:
+    buf = io.BytesIO()
+    wb  = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    _aba_resumo(wb.create_sheet("Resumo Gerencial"), df_inc, df_alt, meta)
+    _aba_dados(wb.create_sheet("Inconsistências"), df_inc,
+               "Inconsistências Fiscais Detectadas", col_sev="severidade")
+    _aba_dados(wb.create_sheet("Registros Alterados"), df_alt,
+               "Registros Modificados na Sessão")
+    _aba_dados(wb.create_sheet("Log de Auditoria"), df_aud,
+               "Trilha de Auditoria — Alterações Realizadas")
+    _aba_dados(wb.create_sheet("Regras Tributárias"), df_reg,
+               "Catálogo de Regras Configuradas")
+
+    wb.save(buf)
+    buf.seek(0)
+    return buf.read()
+
+
+def _borda():
+    s = Side(style="thin", color="CCCCCC")
+    return Border(bottom=s, right=s)
+
+
+def _aba_resumo(ws, df_inc, df_alt, meta):
+    ws.sheet_view.showGridLines = False
+    ws.merge_cells("A1:F1")
+    c = ws["A1"]
+    c.value = "SPED AUDITOR — RELATÓRIO GERENCIAL"
+    c.font  = Font(name="Calibri", bold=True, size=16, color=_COR_BRANCO)
+    c.fill  = PatternFill("solid", fgColor=_COR_HEADER)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 36
+
+    campos_meta = [
+        ("Empresa:", meta.get("nome_empresa", "—")),
+        ("CNPJ:", meta.get("cnpj", "—")),
+        ("Período:", meta.get("periodo_apuracao", "—")),
+        ("UF:", meta.get("uf", "—")),
+        ("Tipo:", meta.get("tipo_arquivo", "—")),
+        ("Gerado em:", datetime.now().strftime("%d/%m/%Y %H:%M")),
+    ]
+    for i, (lbl, val) in enumerate(campos_meta, 3):
+        ws.cell(i, 1, lbl).font = Font(bold=True, size=11)
+        ws.cell(i, 2, val).font = Font(size=11)
+
+    ws.cell(11, 1, "INDICADORES").font = Font(bold=True, size=12, color=_COR_HEADER)
+
+    n_total  = len(df_inc) if not df_inc.empty else 0
+    n_crit   = int((df_inc["severidade"] == "CRITICA").sum()) if not df_inc.empty and "severidade" in df_inc.columns else 0
+    n_aviso  = int((df_inc["severidade"] == "AVISO").sum()) if not df_inc.empty and "severidade" in df_inc.columns else 0
+    n_sem_b  = int((df_inc["tipo"] == "CST_SEM_BASE").sum()) if not df_inc.empty and "tipo" in df_inc.columns else 0
+    n_sem_al = int((df_inc["tipo"] == "CST_SEM_ALIQUOTA").sum()) if not df_inc.empty and "tipo" in df_inc.columns else 0
+    n_sem_im = int((df_inc["tipo"] == "CST_SEM_IMPOSTO").sum()) if not df_inc.empty and "tipo" in df_inc.columns else 0
+    n_alt    = len(df_alt) if not df_alt.empty else 0
+
+    indicadores = [
+        ("Total de Inconsistências", n_total, _COR_HEADER),
+        ("Críticas", n_crit, _COR_CRITICA),
+        ("Avisos", n_aviso, _COR_AVISO),
+        ("Itens sem Base de Cálculo", n_sem_b, _COR_CRITICA),
+        ("Itens sem Alíquota", n_sem_al, _COR_CRITICA),
+        ("Itens sem Valor ICMS", n_sem_im, _COR_CRITICA),
+        ("Registros Alterados", n_alt, _COR_OK),
+    ]
+    for j, (lbl, val, cor) in enumerate(indicadores, 13):
+        ws.cell(j, 1, lbl).font = Font(size=11, bold=True)
+        c2 = ws.cell(j, 2, val)
+        c2.font  = Font(size=11, bold=True, color=_COR_BRANCO)
+        c2.fill  = PatternFill("solid", fgColor=cor)
+        c2.alignment = Alignment(horizontal="center")
+
+    ws.column_dimensions["A"].width = 32
+    ws.column_dimensions["B"].width = 20
+
+
+def _aba_dados(ws, df, titulo: str, col_sev: str = ""):
+    ws.sheet_view.showGridLines = False
+    if df is None or df.empty:
+        ws["A1"] = f"{titulo} — sem dados"
+        ws["A1"].font = Font(bold=True, italic=True, color="888888")
+        return
+
+    n = len(df.columns)
+    ul = get_column_letter(n)
+    ws.merge_cells(f"A1:{ul}1")
+    c = ws["A1"]
+    c.value = titulo
+    c.font  = Font(bold=True, size=13, color=_COR_BRANCO)
+    c.fill  = PatternFill("solid", fgColor=_COR_HEADER)
+    c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 26
+
+    bd = _borda()
+    for ci, col in enumerate(df.columns, 1):
+        h = ws.cell(2, ci, str(col).upper())
+        h.font  = Font(bold=True, size=10, color=_COR_BRANCO)
+        h.fill  = PatternFill("solid", fgColor=_COR_SUB)
+        h.alignment = Alignment(horizontal="center", vertical="center")
+        h.border = bd
+    ws.row_dimensions[2].height = 22
+
+    mapa_cor = {"CRITICA": "FCE4E4", "AVISO": "FFF8DC", "INFO": "EAF4FF"}
+    for ri, (_, row) in enumerate(df.iterrows(), 3):
+        zebra = _COR_ZEBRA if ri % 2 == 0 else _COR_BRANCO
+        sev   = str(row.get(col_sev, "")).upper() if col_sev else ""
+        cor   = mapa_cor.get(sev, zebra)
+        for ci, col in enumerate(df.columns, 1):
+            cell = ws.cell(ri, ci, row[col])
+            cell.font   = Font(size=10)
+            cell.fill   = PatternFill("solid", fgColor=cor)
+            cell.border = bd
+            cell.alignment = Alignment(vertical="center")
+
+    for ci, col in enumerate(df.columns, 1):
+        max_w = max(len(str(col)), df[col].astype(str).str.len().max() if len(df) > 0 else 10)
+        ws.column_dimensions[get_column_letter(ci)].width = min(max_w + 4, 42)
+
+    ws.freeze_panes = "A3"
+
+
+def exportar_csv(df: pd.DataFrame) -> bytes:
+    buf = io.StringIO()
+    df.to_csv(buf, index=False, sep=";", encoding="utf-8-sig")
+    return buf.getvalue().encode("utf-8-sig")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  UTILITÁRIOS DE UI  ██════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _cols_relevantes(df: pd.DataFrame) -> list[str]:
+    base = ["numero_linha", "bloco", "registro"]
+    extras = [
+        c for c in df.columns
+        if not c.startswith("campo_") and c not in base + ["linha_original"]
+        and df[c].astype(str).str.strip().ne("").any()
+    ]
+    return base + extras[:28]
+
+
+def _card(col, label: str, valor, classe: str = "") -> None:
+    cores = {"critico": "#C0392B", "aviso": "#B7860D", "ok": "#1A7A35", "": "#0F2540"}
+    cor = cores.get(classe, "#0F2540")
+    col.markdown(
+        f"""
+        <div style="background:#fff;border:1px solid #E0E8F4;border-radius:8px;
+                    padding:14px 16px;text-align:center;
+                    box-shadow:0 2px 6px rgba(26,58,92,.07);">
+          <div style="font-size:.7rem;color:#5A7398;font-weight:700;
+                      text-transform:uppercase;letter-spacing:.04em;">{label}</div>
+          <div style="font-size:1.7rem;font-weight:800;color:{cor};margin-top:4px;">{valor}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _metricas(df: pd.DataFrame) -> dict:
+    df_c170 = df[df["registro"] == "C170"] if "registro" in df.columns else pd.DataFrame()
+
+    def sem(col):
+        if col not in df_c170.columns:
+            return 0
+        return int(df_c170[col].apply(
+            lambda x: x is None or (isinstance(x, float) and (x == 0.0 or x != x))
+        ).sum())
+
+    return {
+        "total_linhas": len(df),
+        "total_c100": int((df["registro"] == "C100").sum()) if "registro" in df.columns else 0,
+        "total_c170": int((df["registro"] == "C170").sum()) if "registro" in df.columns else 0,
+        "c170_sem_base": sem("VL_BC_ICMS"),
+        "c170_sem_aliq": sem("ALIQ_ICMS"),
+        "c170_sem_icms": sem("VL_ICMS"),
+    }
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  CSS GLOBAL  █████════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+html, body, [class*="css"] { font-family:'Inter',sans-serif; }
+
+/* ── Sidebar ── */
+section[data-testid="stSidebar"] {
+  background:#0F2540 !important; color:#fff;
+}
+section[data-testid="stSidebar"] .stRadio label {
+  color:#BDD6F5 !important; font-size:.88rem; padding:3px 0;
+}
+section[data-testid="stSidebar"] .stRadio label:hover { color:#fff !important; }
+section[data-testid="stSidebar"] h3 { color:#7BAFD4; }
+
+/* ── Título de seção ── */
+.sec {
+  font-size:1.05rem; font-weight:700; color:#0F2540;
+  border-left:4px solid #1A6BAD; padding-left:10px;
+  margin:18px 0 12px 0;
+}
+
+/* ── Badges ── */
+.badge-critica { background:#FCE4E4;color:#C0392B;padding:2px 9px;
+                 border-radius:12px;font-size:.73rem;font-weight:700; }
+.badge-aviso   { background:#FFF8DC;color:#B7860D;padding:2px 9px;
+                 border-radius:12px;font-size:.73rem;font-weight:700; }
+.badge-info    { background:#EAF4FF;color:#1A5C9E;padding:2px 9px;
+                 border-radius:12px;font-size:.73rem;font-weight:700; }
+
+/* ── Botões ── */
+.stButton > button { border-radius:6px; font-weight:600; font-size:.87rem; }
+hr { border-color:#E0E8F4; }
+.stAlert { border-radius:6px; }
+div[data-testid="metric-container"] { background:#F7FAFF;
+  border:1px solid #E0E8F4; border-radius:8px; padding:10px 14px; }
+</style>
+"""
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  INICIALIZAÇÃO  ██════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+def _init():
+    for k, v in {
+        "resultado": None,
+        "linhas_orig": None,
+        "editor": None,
+        "regras": None,
+        "df_inc": None,
+    }.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    if st.session_state["regras"] is None:
+        st.session_state["regras"] = carregar_regras()
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  TELAS DA APLICAÇÃO  █════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIDEBAR
+# ─────────────────────────────────────────────────────────────────────────────
+
+PAGINAS = [
+    "📊 Dashboard",
+    "📂 Upload",
+    "🗂️ Blocos",
+    "📋 Registros",
+    "🧾 Notas Fiscais",
+    "📦 Itens (C170)",
+    "⚠️ Inconsistências",
+    "🔧 Correções em Massa",
+    "✏️ Editor Manual",
+    "📤 Exportação",
+    "📜 Log de Auditoria",
+    "⚙️ Motor de Regras",
+]
+
+
+def sidebar() -> str:
+    with st.sidebar:
+        st.markdown(
+            """
+            <div style="padding:10px 0 20px;text-align:center;">
+              <span style="font-size:1.5rem;font-weight:800;color:#fff;letter-spacing:.02em;">
+                🔍 SPED Auditor
+              </span><br>
+              <span style="font-size:.7rem;color:#7BAFD4;">Fiscal Intelligence Platform v1.0</span>
+            </div>
+            """, unsafe_allow_html=True,
+        )
+
+        res = st.session_state.get("resultado")
+        if res:
+            m = res.metadados
+            st.markdown(
+                f"""
+                <div style="background:#1A3A5C;border-radius:6px;padding:9px 11px;margin-bottom:14px;">
+                  <div style="font-size:.65rem;color:#7BAFD4;font-weight:700;">ARQUIVO CARREGADO</div>
+                  <div style="font-size:.8rem;color:#fff;margin-top:3px;">{(m.nome_empresa or '—')[:26]}</div>
+                  <div style="font-size:.68rem;color:#BDD6F5;">CNPJ: {m.cnpj or '—'}</div>
+                  <div style="font-size:.68rem;color:#BDD6F5;">{m.periodo_apuracao or '—'}</div>
+                  <div style="font-size:.68rem;color:#BDD6F5;">Blocos: {', '.join(m.blocos_presentes)}</div>
+                </div>
+                """, unsafe_allow_html=True,
+            )
+
+        st.markdown("**Navegação**")
+        pag = st.radio("", PAGINAS, label_visibility="collapsed")
+
+        ed = st.session_state.get("editor")
+        if ed and ed.auditoria.total():
+            st.markdown(
+                f'<div style="color:#7BAFD4;font-size:.72rem;margin-top:10px;">'
+                f'✏️ {ed.auditoria.total()} alteração(ões) na sessão</div>',
+                unsafe_allow_html=True,
+            )
+    return pag
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# UPLOAD
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_upload():
+    st.markdown('<div class="sec">Upload do Arquivo SPED</div>', unsafe_allow_html=True)
+
+    col1, col2 = st.columns([3, 2])
+    with col1:
+        arq = st.file_uploader("Selecione o arquivo SPED (.txt)", type=["txt"])
+        demo = st.checkbox("📁 Usar arquivo de demonstração (inclui inconsistências intencionais)",
+                           value=not bool(arq))
+        usuario = st.text_input("Usuário da sessão:", value="analista")
+
+        if st.button("▶ Processar Arquivo", type="primary", use_container_width=True):
+            _processar(arq, demo, usuario)
+
+    with col2:
+        st.markdown("**Suporte:**")
+        st.markdown("- ✅ EFD ICMS/IPI  \n- ✅ EFD Contribuições  \n- 🔄 ECD/ECF *(arquitetura pronta)*")
+        st.markdown("**Encoding:** UTF-8, Latin-1, CP1252")
+
+        res = st.session_state.get("resultado")
+        if res:
+            m = res.metadados
+            st.success(
+                f"✅ **{m.nome_empresa}**\n\n"
+                f"CNPJ: `{m.cnpj}` | UF: {m.uf}\n\n"
+                f"Período: {m.periodo_apuracao}\n\n"
+                f"Tipo: {res.tipo_arquivo.replace('_', ' ')}\n\n"
+                f"Blocos: `{', '.join(m.blocos_presentes)}`\n\n"
+                f"Linhas: `{m.total_linhas:,}`"
+            )
+
+
+def _processar(arq, demo: bool, usuario: str):
+    with st.spinner("Analisando arquivo SPED…"):
+        try:
+            conteudo = SPED_DEMO.encode("utf-8") if (demo or not arq) else arq.read()
+            if demo or not arq:
+                st.info("Arquivo de demonstração carregado.")
+
+            res = parse_sped(conteudo)
+            st.session_state["resultado"]  = res
+            st.session_state["linhas_orig"] = list(res.linhas)
+            st.session_state["editor"]     = EditorSped(res.df)
+            st.session_state["_usuario"]   = usuario
+
+            regras = st.session_state["regras"] or carregar_regras()
+            df_inc = validar(res.df, regras)
+            st.session_state["df_inc"] = df_inc
+
+            st.success(
+                f"✅ {res.metadados.total_linhas:,} linhas processadas. "
+                f"{len(df_inc)} inconsistência(s) detectada(s)."
+            )
+            if res.erros:
+                with st.expander(f"⚠️ {len(res.erros)} aviso(s) do parser"):
+                    for e in res.erros[:20]:
+                        st.text(e)
+        except Exception as e:
+            st.error(f"Erro ao processar: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DASHBOARD
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_dashboard():
+    st.markdown('<div class="sec">Dashboard — Visão Geral</div>', unsafe_allow_html=True)
+
+    res = st.session_state.get("resultado")
+    ed  = st.session_state.get("editor")
+    df_inc = st.session_state.get("df_inc", pd.DataFrame())
+
+    if not res:
+        st.info("Nenhum arquivo carregado. Acesse **Upload** para começar."); return
+
+    df  = ed.df if ed else res.df
+    m   = res.metadados
+    met = _metricas(df)
+
+    # Metadados
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Empresa", (m.nome_empresa or "—")[:20])
+    c2.metric("CNPJ", m.cnpj or "—")
+    c3.metric("Período", m.periodo_apuracao or "—")
+    c4.metric("Tipo", res.tipo_arquivo.replace("_", " "))
+
+    st.markdown("---")
+
+    # Cards
+    cols = st.columns(7)
+    _card(cols[0], "Total Linhas",   f"{met['total_linhas']:,}")
+    _card(cols[1], "NF-e (C100)",    f"{met['total_c100']:,}")
+    _card(cols[2], "Itens (C170)",   f"{met['total_c170']:,}")
+    n_inc  = len(df_inc) if not df_inc.empty else 0
+    n_crit = int((df_inc["severidade"] == "CRITICA").sum()) if not df_inc.empty and "severidade" in df_inc.columns else 0
+    _card(cols[3], "Inconsistências", f"{n_inc:,}", "critico" if n_inc else "ok")
+    _card(cols[4], "Críticas",        f"{n_crit:,}", "critico" if n_crit else "ok")
+    _card(cols[5], "Sem Base",        f"{met['c170_sem_base']:,}", "critico" if met['c170_sem_base'] else "ok")
+    _card(cols[6], "Sem ICMS",        f"{met['c170_sem_icms']:,}", "critico" if met['c170_sem_icms'] else "ok")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Gráficos
+    g1, g2 = st.columns(2)
+
+    with g1:
+        st.markdown('<div class="sec">Registros por Bloco</div>', unsafe_allow_html=True)
+        df_b = df["bloco"].value_counts().reset_index()
+        df_b.columns = ["Bloco", "Qtd"]
+        fig = px.bar(df_b, x="Bloco", y="Qtd", color="Bloco",
+                     color_discrete_sequence=px.colors.qualitative.Set2,
+                     template="plotly_white")
+        fig.update_layout(showlegend=False, height=260,
+                          margin=dict(l=5, r=5, t=5, b=5))
+        st.plotly_chart(fig, use_container_width=True)
+
+    with g2:
+        st.markdown('<div class="sec">Itens por CST ICMS (C170)</div>', unsafe_allow_html=True)
+        df_c170 = df[df["registro"] == "C170"]
+        if not df_c170.empty and "CST_ICMS" in df_c170.columns:
+            df_cst = df_c170["CST_ICMS"].value_counts().reset_index()
+            df_cst.columns = ["CST", "Qtd"]
+            fig2 = px.pie(df_cst, names="CST", values="Qtd", hole=0.4,
+                          color_discrete_sequence=px.colors.qualitative.Pastel,
+                          template="plotly_white")
+            fig2.update_layout(height=260, margin=dict(l=5, r=5, t=5, b=5))
+            st.plotly_chart(fig2, use_container_width=True)
+
+    g3, g4 = st.columns(2)
+
+    with g3:
+        st.markdown('<div class="sec">Top 10 CFOPs (C170)</div>', unsafe_allow_html=True)
+        if not df_c170.empty and "CFOP" in df_c170.columns:
+            df_cf = df_c170["CFOP"].value_counts().head(10).reset_index()
+            df_cf.columns = ["CFOP", "Qtd"]
+            fig3 = px.bar(df_cf, x="CFOP", y="Qtd", template="plotly_white",
+                          color_discrete_sequence=["#1A6BAD"])
+            fig3.update_layout(height=250, margin=dict(l=5, r=5, t=5, b=5))
+            st.plotly_chart(fig3, use_container_width=True)
+
+    with g4:
+        st.markdown('<div class="sec">Inconsistências por Tipo</div>', unsafe_allow_html=True)
+        if not df_inc.empty and "tipo" in df_inc.columns:
+            df_tp = df_inc["tipo"].value_counts().reset_index()
+            df_tp.columns = ["Tipo", "Qtd"]
+            fig4 = px.bar(df_tp, x="Qtd", y="Tipo", orientation="h",
+                          template="plotly_white",
+                          color="Qtd",
+                          color_continuous_scale=["#FFF0F0", "#C0392B"])
+            fig4.update_layout(height=250, margin=dict(l=5, r=5, t=5, b=5),
+                               coloraxis_showscale=False)
+            st.plotly_chart(fig4, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BLOCOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_blocos():
+    st.markdown('<div class="sec">Visão por Blocos</div>', unsafe_allow_html=True)
+    ed = st.session_state.get("editor")
+    if not ed:
+        _no_file(); return
+
+    df     = ed.df
+    blocos = sorted(df["bloco"].unique())
+
+    cols = st.columns(min(len(blocos), 6))
+    for i, b in enumerate(blocos):
+        qtd = int((df["bloco"] == b).sum())
+        cols[i % 6].metric(f"Bloco {b}", f"{qtd:,}")
+
+    st.markdown("---")
+    b_sel = st.selectbox("Explorar bloco:", blocos)
+    df_b  = df[df["bloco"] == b_sel].copy()
+    regs  = sorted(df_b["registro"].unique())
+    r_sel = st.multiselect("Filtrar registros:", regs, default=regs[:6])
+    if r_sel:
+        df_b = df_b[df_b["registro"].isin(r_sel)]
+
+    st.dataframe(df_b[_cols_relevantes(df_b)].fillna("").head(500),
+                 use_container_width=True, height=420)
+    st.caption(f"{len(df_b):,} registros")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REGISTROS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_registros():
+    st.markdown('<div class="sec">Visão por Registros</div>', unsafe_allow_html=True)
+    ed = st.session_state.get("editor")
+    if not ed:
+        _no_file(); return
+
+    df   = ed.df
+    regs = sorted(df["registro"].unique())
+    c1, c2 = st.columns([2, 3])
+    with c1:
+        reg = st.selectbox("Registro:", regs)
+    with c2:
+        busca = st.text_input("Buscar:", placeholder="CST, CFOP, CNPJ…")
+
+    df_r = df[df["registro"] == reg].copy()
+    if busca:
+        mask = df_r.astype(str).apply(lambda c: c.str.contains(busca, case=False)).any(axis=1)
+        df_r = df_r[mask]
+
+    st.dataframe(df_r[_cols_relevantes(df_r)].fillna(""), use_container_width=True, height=430)
+    st.caption(f"{len(df_r):,} registros do tipo {reg}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTAS FISCAIS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_notas():
+    st.markdown('<div class="sec">Notas Fiscais (C100)</div>', unsafe_allow_html=True)
+    ed = st.session_state.get("editor")
+    if not ed:
+        _no_file(); return
+
+    df_c100 = ed.df[ed.df["registro"] == "C100"].copy()
+    if df_c100.empty:
+        st.warning("Nenhum C100 encontrado."); return
+
+    cols_nf = [c for c in ["numero_linha", "NUM_DOC", "DT_DOC", "COD_PART",
+                            "VL_DOC", "VL_BC_ICMS", "VL_ICMS", "COD_SIT"] if c in df_c100.columns]
+
+    c1, c2 = st.columns(2)
+    with c1:
+        parceiros = ["Todos"] + sorted(df_c100["COD_PART"].dropna().unique().tolist()) \
+                    if "COD_PART" in df_c100.columns else ["Todos"]
+        parc = st.selectbox("Parceiro:", parceiros)
+    with c2:
+        sit = ["Todos"] + sorted(df_c100["COD_SIT"].dropna().unique().tolist()) \
+              if "COD_SIT" in df_c100.columns else ["Todos"]
+        cod_sit = st.selectbox("Situação:", sit)
+
+    df_f = df_c100.copy()
+    if parc != "Todos" and "COD_PART" in df_f.columns:
+        df_f = df_f[df_f["COD_PART"] == parc]
+    if cod_sit != "Todos" and "COD_SIT" in df_f.columns:
+        df_f = df_f[df_f["COD_SIT"] == cod_sit]
+
+    st.dataframe(df_f[cols_nf].fillna(""), use_container_width=True, height=420)
+    st.caption(f"{len(df_f):,} notas")
+
+    # Totalizadores
+    cns = [c for c in ["VL_DOC", "VL_BC_ICMS", "VL_ICMS"] if c in df_f.columns]
+    if cns:
+        ct = st.columns(len(cns))
+        for i, c in enumerate(cns):
+            tot = pd.to_numeric(df_f[c], errors="coerce").sum()
+            ct[i].metric(c, _formatar_brl(tot))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ITENS C170
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_itens():
+    st.markdown('<div class="sec">Itens de NF-e (C170)</div>', unsafe_allow_html=True)
+    ed = st.session_state.get("editor")
+    if not ed:
+        _no_file(); return
+
+    df_c170 = ed.df[ed.df["registro"] == "C170"].copy()
+    if df_c170.empty:
+        st.warning("Nenhum C170 encontrado."); return
+
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        csts = ["Todos"] + sorted(df_c170["CST_ICMS"].dropna().unique().tolist()) \
+               if "CST_ICMS" in df_c170.columns else ["Todos"]
+        cst_f = st.selectbox("CST ICMS:", csts)
+    with c2:
+        cfops = ["Todos"] + sorted(df_c170["CFOP"].dropna().unique().tolist()) \
+                if "CFOP" in df_c170.columns else ["Todos"]
+        cfop_f = st.selectbox("CFOP:", cfops)
+    with c3:
+        ap = st.checkbox("Apenas com inconsistências", value=False)
+
+    df_f = df_c170.copy()
+    if cst_f != "Todos":
+        df_f = df_f[df_f["CST_ICMS"] == cst_f]
+    if cfop_f != "Todos":
+        df_f = df_f[df_f["CFOP"] == cfop_f]
+    if ap:
+        df_inc = st.session_state.get("df_inc", pd.DataFrame())
+        if not df_inc.empty:
+            linhas_inc = set(df_inc["numero_linha"].tolist())
+            df_f = df_f[df_f["numero_linha"].isin(linhas_inc)]
+
+    cols_item = [c for c in ["numero_linha", "COD_ITEM", "DESCR_COMPL", "QTD", "UNID",
+                              "VL_ITEM", "CST_ICMS", "CFOP", "VL_BC_ICMS",
+                              "ALIQ_ICMS", "VL_ICMS", "CST_PIS", "VL_PIS",
+                              "CST_COFINS", "VL_COFINS"] if c in df_f.columns]
+    st.dataframe(df_f[cols_item].fillna(""), use_container_width=True, height=420)
+    st.caption(f"{len(df_f):,} itens")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INCONSISTÊNCIAS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_inconsistencias():
+    st.markdown('<div class="sec">Inconsistências Fiscais</div>', unsafe_allow_html=True)
+
+    df_inc = st.session_state.get("df_inc", pd.DataFrame())
+    res    = st.session_state.get("resultado")
+
+    if res and (df_inc is None or df_inc.empty):
+        st.success("✅ Nenhuma inconsistência detectada."); return
+    if not res:
+        _no_file(); return
+
+    # Métricas
+    c1, c2, c3, c4 = st.columns(4)
+    n_crit = int((df_inc["severidade"] == "CRITICA").sum()) if "severidade" in df_inc.columns else 0
+    n_avi  = int((df_inc["severidade"] == "AVISO").sum()) if "severidade" in df_inc.columns else 0
+    n_corr = int(df_inc["corrigido"].sum()) if "corrigido" in df_inc.columns else 0
+    _card(c1, "Total", len(df_inc))
+    _card(c2, "Críticas", n_crit, "critico")
+    _card(c3, "Avisos", n_avi, "aviso")
+    _card(c4, "Corrigidos", n_corr, "ok")
+
+    st.markdown("---")
+
+    # Filtros
+    c1, c2, c3, c4 = st.columns(4)
+    sev_ops  = ["Todos"] + sorted(df_inc["severidade"].unique().tolist()) if "severidade" in df_inc.columns else ["Todos"]
+    tipo_ops = ["Todos"] + sorted(df_inc["tipo"].unique().tolist()) if "tipo" in df_inc.columns else ["Todos"]
+    cst_ops  = ["Todos"] + sorted(df_inc["cst"].dropna().unique().tolist()) if "cst" in df_inc.columns else ["Todos"]
+
+    with c1: sev_f  = st.selectbox("Severidade:", sev_ops)
+    with c2: tipo_f = st.selectbox("Tipo:", tipo_ops)
+    with c3: cst_f  = st.selectbox("CST:", cst_ops)
+    with c4: busca  = st.text_input("Buscar na descrição:")
+
+    df_f = df_inc.copy()
+    if sev_f  != "Todos": df_f = df_f[df_f["severidade"] == sev_f]
+    if tipo_f != "Todos": df_f = df_f[df_f["tipo"] == tipo_f]
+    if cst_f  != "Todos": df_f = df_f[df_f["cst"] == cst_f]
+    if busca: df_f = df_f[df_f["descricao"].astype(str).str.contains(busca, case=False)]
+
+    def colorir(row):
+        if row.get("severidade") == "CRITICA":
+            return ["background-color:#FFF0F0"] * len(row)
+        if row.get("severidade") == "AVISO":
+            return ["background-color:#FFFDE8"] * len(row)
+        return [""] * len(row)
+
+    cols_show = [c for c in df_f.columns if c not in ["linha_original"]]
+    st.dataframe(df_f[cols_show].style.apply(colorir, axis=1),
+                 use_container_width=True, height=450)
+    st.caption(f"{len(df_f):,} inconsistências")
+
+    if st.button("🔄 Revalidar Arquivo"):
+        ed = st.session_state.get("editor")
+        regras = st.session_state.get("regras")
+        if ed and regras:
+            st.session_state["df_inc"] = validar(ed.df, regras)
+            st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CORREÇÕES EM MASSA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_massa():
+    st.markdown('<div class="sec">Correções em Massa</div>', unsafe_allow_html=True)
+    ed    = st.session_state.get("editor")
+    regras = st.session_state.get("regras", [])
+    df_inc = st.session_state.get("df_inc", pd.DataFrame())
+    usuario = st.session_state.get("_usuario", "analista")
+
+    if not ed:
+        _no_file(); return
+
+    df_c170 = ed.df[ed.df["registro"] == "C170"].copy()
+    if df_c170.empty:
+        st.warning("Nenhum C170 disponível."); return
+
+    # ── Filtros
+    st.markdown("**1. Filtros de seleção de itens**")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        csts  = ["Todos"] + sorted(df_c170["CST_ICMS"].dropna().unique().tolist()) if "CST_ICMS" in df_c170.columns else ["Todos"]
+        cst_f = st.selectbox("CST ICMS:", csts, key="m_cst")
+    with c2:
+        cfops  = ["Todos"] + sorted(df_c170["CFOP"].dropna().unique().tolist()) if "CFOP" in df_c170.columns else ["Todos"]
+        cfop_f = st.selectbox("CFOP:", cfops, key="m_cfop")
+    with c3:
+        ti_ops = ["Todos"]
+        if not df_inc.empty and "tipo" in df_inc.columns:
+            ti_ops += sorted(df_inc["tipo"].unique().tolist())
+        tipo_f = st.selectbox("Tipo inconsistência:", ti_ops, key="m_tipo")
+    with c4:
+        ap_inc = st.checkbox("Apenas com inconsistência", value=True, key="m_inc")
+
+    df_alvo = df_c170.copy()
+    if cst_f  != "Todos": df_alvo = df_alvo[df_alvo["CST_ICMS"] == cst_f]
+    if cfop_f != "Todos": df_alvo = df_alvo[df_alvo["CFOP"] == cfop_f]
+    if ap_inc and not df_inc.empty:
+        linhas_t = set(
+            df_inc[df_inc["tipo"] == tipo_f]["numero_linha"].tolist()
+            if tipo_f != "Todos" else df_inc["numero_linha"].tolist()
+        )
+        df_alvo = df_alvo[df_alvo["numero_linha"].isin(linhas_t)]
+
+    n_alvo = len(df_alvo)
+    st.info(f"**{n_alvo} item(ns) selecionado(s)**")
+
+    cols_vis = [c for c in ["numero_linha", "CST_ICMS", "CFOP", "VL_ITEM",
+                             "VL_BC_ICMS", "ALIQ_ICMS", "VL_ICMS"] if c in df_alvo.columns]
+    st.dataframe(df_alvo[cols_vis].fillna("").head(200),
+                 use_container_width=True, height=200)
+
+    if df_alvo.empty:
+        return
+
+    nls = df_alvo["numero_linha"].tolist()
+
+    st.markdown("---")
+    st.markdown("**2. Ações em lote**")
+
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["📐 Preencher Base", "📊 Preencher Alíquota", "🧮 Recalcular Imposto", "👁️ Prévia"]
+    )
+
+    with tab1:
+        fonte = st.radio("Origem da base:", ["VL_ITEM do próprio item", "Valor manual"], key="fonte_b")
+        if "manual" in fonte:
+            val_b = st.number_input("Valor (R$):", min_value=0.0, step=0.01, key="b_manual")
+        motivo_b = st.text_input("Motivo:", "Base preenchida via VL_ITEM", key="mot_b")
+        if st.button("▶ Aplicar Base", type="primary"):
+            alt = 0
+            for _, row in df_alvo.iterrows():
+                nl = int(row["numero_linha"])
+                if "manual" in fonte:
+                    v = _float_para_sped(val_b)
+                else:
+                    vi = _parse_decimal_br(row.get("VL_ITEM"))
+                    v  = _float_para_sped(vi) if vi else ""
+                if v:
+                    ok = ed.editar(nl, "VL_BC_ICMS", v, motivo_b, "", usuario)
+                    if ok: alt += 1
+            st.success(f"✅ {alt} base(s) preenchida(s).")
+
+    with tab2:
+        aliq_v  = st.number_input("Alíquota (%):", 0.0, 100.0, 12.0, 0.5, key="aliq_massa")
+        motivo_a = st.text_input("Motivo:", "Alíquota padrão aplicada", key="mot_a")
+        if st.button("▶ Aplicar Alíquota", type="primary"):
+            alt = ed.massa(nls, "ALIQ_ICMS", _float_para_sped(aliq_v), motivo_a, "", usuario)
+            st.success(f"✅ {alt} alíquota(s) preenchida(s).")
+
+    with tab3:
+        motivo_c = st.text_input("Motivo:", "Recálculo automático pelo motor de regras", key="mot_c")
+        st.caption("Fórmula: VL_ICMS = VL_BC_ICMS × ALIQ_ICMS ÷ 100 (conforme regra CST+CFOP)")
+        if st.button("▶ Recalcular Imposto", type="primary"):
+            alt = ed.recalcular_massa(nls, regras, motivo_c, usuario)
+            st.success(f"✅ {alt} imposto(s) recalculado(s).")
+
+    with tab4:
+        df_prev = ed.preview(nls)
+        if not df_prev.empty:
+            st.dataframe(df_prev, use_container_width=True)
+        else:
+            st.info("Nenhuma alteração pendente.")
+
+    st.markdown("---")
+    if st.button("↩️ Desfazer última operação"):
+        if ed.desfazer():
+            st.success("✅ Desfeito."); st.rerun()
+        else:
+            st.warning("Nada para desfazer.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EDITOR MANUAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_editor():
+    st.markdown('<div class="sec">Editor Manual de Registros</div>', unsafe_allow_html=True)
+    ed = st.session_state.get("editor")
+    usuario = st.session_state.get("_usuario", "analista")
+
+    if not ed:
+        _no_file(); return
+
+    df   = ed.df
+    regs = sorted(df["registro"].unique())
+
+    c1, c2, c3 = st.columns([2, 2, 1])
+    with c1:
+        reg_sel = st.selectbox("Tipo de registro:", regs)
+    df_reg = df[df["registro"] == reg_sel]
+    with c2:
+        nl_min = int(df_reg["numero_linha"].min()) if not df_reg.empty else 1
+        nl_max = int(df_reg["numero_linha"].max()) if not df_reg.empty else 1
+        nl_sel = st.number_input("Número da linha:", nl_min, nl_max, nl_min)
+    with c3:
+        motivo = st.text_input("Motivo:", key="ed_motivo")
+
+    df_l = df[df["numero_linha"] == nl_sel]
+    if df_l.empty:
+        st.warning("Linha não encontrada."); return
+
+    row_a = df_l.iloc[0]
+    row_o_df = ed.df_original[ed.df_original["numero_linha"] == nl_sel]
+    row_o = row_o_df.iloc[0] if not row_o_df.empty else row_a
+
+    # Campos editáveis
+    mapa = MAPA_CAMPOS.get(reg_sel, {})
+    campos = list(mapa.keys()) if mapa else [
+        c for c in df.columns
+        if not c.startswith("campo_") and c not in ["numero_linha", "bloco", "registro", "linha_original"]
+    ]
+
+    # Campos alterados
+    alt_campos = [c for c in campos if str(row_a.get(c, "")) != str(row_o.get(c, ""))]
+    if alt_campos:
+        st.warning(f"⚠️ Campo(s) alterado(s) nesta linha: **{', '.join(alt_campos)}**")
+
+    st.markdown(f"**Editando: {reg_sel} — Linha {nl_sel}**")
+
+    pendentes = {}
+    cols3 = st.columns(3)
+    for i, campo in enumerate(campos):
+        val_a = str(row_a.get(campo, "") or "")
+        val_o = str(row_o.get(campo, "") or "")
+        dest  = "🔴 " if val_a != val_o else ""
+        novo  = cols3[i % 3].text_input(
+            f"{dest}{campo}", value=val_a, key=f"ed_{campo}_{nl_sel}"
+        )
+        if novo != val_a:
+            pendentes[campo] = novo
+
+    # Botões de ação
+    ca, cb, cc = st.columns(3)
+    with ca:
+        if st.button("💾 Salvar", type="primary", disabled=not pendentes):
+            for c, v in pendentes.items():
+                ed.editar(nl_sel, c, v, motivo, "", usuario)
+            st.success(f"✅ {len(pendentes)} campo(s) salvo(s)."); st.rerun()
+    with cb:
+        if st.button("↩️ Desfazer"):
+            if ed.desfazer():
+                st.success("✅ Desfeito."); st.rerun()
+            else:
+                st.warning("Nada para desfazer.")
+    with cc:
+        if st.button("🔄 Restaurar linha"):
+            ed.restaurar([nl_sel])
+            st.success("✅ Restaurado."); st.rerun()
+
+    # Comparação
+    st.markdown("---")
+    st.markdown("**Comparação Original vs. Atual**")
+    diffs = []
+    for c in campos:
+        va = str(row_a.get(c, "") or "")
+        vo = str(row_o.get(c, "") or "")
+        if va != vo:
+            diffs.append({"Campo": c, "Original": vo, "Atual": va})
+    if diffs:
+        st.dataframe(pd.DataFrame(diffs), use_container_width=True)
+    else:
+        st.success("Nenhuma diferença nesta linha.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPORTAÇÃO
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_exportacao():
+    st.markdown('<div class="sec">Exportação</div>', unsafe_allow_html=True)
+
+    ed     = st.session_state.get("editor")
+    res    = st.session_state.get("resultado")
+    df_inc = st.session_state.get("df_inc", pd.DataFrame())
+    regras = st.session_state.get("regras", [])
+
+    if not ed or not res:
+        _no_file(); return
+
+    m = res.metadados
+    meta_dict = {
+        "nome_empresa": m.nome_empresa, "cnpj": m.cnpj,
+        "periodo_apuracao": m.periodo_apuracao, "uf": m.uf,
+        "tipo_arquivo": res.tipo_arquivo,
+    }
+
+    c1, c2 = st.columns(2)
+
+    with c1:
+        st.markdown("#### 📄 SPED TXT Corrigido")
+        st.markdown("Arquivo reconstruído com todas as correções da sessão.")
+        if st.button("Gerar SPED TXT", type="primary"):
+            linhas_orig = st.session_state.get("linhas_orig", res.linhas)
+            linhas_corr = sincronizar_df_para_linhas(ed.df, linhas_orig)
+            bts = reconstruir_sped(linhas_corr)
+            nome = f"SPED_CORRIGIDO_{m.cnpj}_{m.periodo_apuracao.replace(' ', '').replace('/', '')[:12]}.txt"
+            st.download_button("⬇️ Baixar TXT", bts, nome, "text/plain")
+
+    with c2:
+        st.markdown("#### 📊 Relatório Excel (5 abas)")
+        st.markdown("Resumo · Inconsistências · Alterados · Auditoria · Regras")
+        if st.button("Gerar Excel", type="primary"):
+            df_alt = ed.get_alterados()
+            df_aud = ed.auditoria.to_df()
+            df_reg = pd.DataFrame([asdict(r) for r in regras])
+            bts = exportar_excel(df_inc or pd.DataFrame(), df_alt, df_aud, df_reg, meta_dict)
+            nome = f"AUDITORIA_SPED_{m.cnpj}.xlsx"
+            st.download_button("⬇️ Baixar Excel", bts, nome,
+                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.markdown("---")
+    c3, c4 = st.columns(2)
+
+    with c3:
+        st.markdown("#### 📋 CSV Inconsistências")
+        if df_inc is not None and not df_inc.empty:
+            csv = exportar_csv(df_inc)
+            st.download_button("⬇️ Baixar CSV", csv, "inconsistencias_sped.csv", "text/csv")
+        else:
+            st.info("Sem inconsistências para exportar.")
+
+    with c4:
+        st.markdown("#### 📋 CSV Log de Auditoria")
+        df_aud = ed.auditoria.to_df()
+        if not df_aud.empty:
+            csv_a = exportar_csv(df_aud)
+            st.download_button("⬇️ Baixar CSV", csv_a, "log_auditoria.csv", "text/csv")
+        else:
+            st.info("Sem alterações registradas.")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOG DE AUDITORIA
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_auditoria():
+    st.markdown('<div class="sec">Log de Auditoria — Trilha de Alterações</div>', unsafe_allow_html=True)
+    ed = st.session_state.get("editor")
+    if not ed:
+        _no_file(); return
+
+    df_aud = ed.auditoria.to_df()
+    if df_aud.empty:
+        st.info("Nenhuma alteração registrada nesta sessão."); return
+
+    c1, c2, c3 = st.columns(3)
+    _card(c1, "Total Alterações", ed.auditoria.total())
+    tipos = df_aud["Tipo"].value_counts().to_dict() if "Tipo" in df_aud.columns else {}
+    _card(c2, "Manuais", tipos.get("MANUAL", 0))
+    _card(c3, "Em Massa / Auto", tipos.get("MASSA", 0) + tipos.get("AUTO", 0))
+
+    st.markdown("---")
+
+    # Filtros
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        t_ops = ["Todos"] + sorted(df_aud["Tipo"].unique().tolist()) if "Tipo" in df_aud.columns else ["Todos"]
+        t_f   = st.selectbox("Tipo de operação:", t_ops)
+    with cc2:
+        c_ops = ["Todos"] + sorted(df_aud["Campo"].unique().tolist()) if "Campo" in df_aud.columns else ["Todos"]
+        c_f   = st.selectbox("Campo alterado:", c_ops)
+
+    df_f = df_aud.copy()
+    if t_f != "Todos": df_f = df_f[df_f["Tipo"] == t_f]
+    if c_f != "Todos": df_f = df_f[df_f["Campo"] == c_f]
+
+    st.dataframe(df_f, use_container_width=True, height=480)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MOTOR DE REGRAS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_regras():
+    st.markdown('<div class="sec">Motor de Regras Tributárias</div>', unsafe_allow_html=True)
+
+    regras: list[RegraFiscal] = st.session_state.get("regras") or carregar_regras()
+    st.session_state["regras"] = regras
+
+    tab1, tab2 = st.tabs(["📋 Regras Ativas", "➕ Cadastrar / Editar"])
+
+    with tab1:
+        df_r = pd.DataFrame([asdict(r) for r in regras])
+        st.dataframe(df_r, use_container_width=True, height=400)
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("🔄 Resetar para regras padrão"):
+                st.session_state["regras"] = list(REGRAS_PADRAO)
+                salvar_regras(REGRAS_PADRAO)
+                st.success("✅ Regras padrão restauradas."); st.rerun()
+        with c2:
+            id_del = st.text_input("ID da regra para remover:", key="id_del")
+            if st.button("🗑️ Remover regra") and id_del:
+                st.session_state["regras"] = [r for r in regras if r.id != id_del]
+                salvar_regras(st.session_state["regras"])
+                st.success(f"✅ Regra '{id_del}' removida."); st.rerun()
+
+    with tab2:
+        st.markdown("**Preencha os campos da nova regra:**")
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            n_id      = st.text_input("ID (ex: 000_5102):", key="n_id")
+            n_cst     = st.text_input("CST ICMS (* = todos):", key="n_cst")
+            n_cfop    = st.text_input("CFOP (* = todos):", key="n_cfop")
+            n_oper    = st.selectbox("Operação:", ["*", "E", "S"], key="n_oper")
+        with c2:
+            n_desc    = st.text_area("Descrição:", key="n_desc")
+            n_exb     = st.checkbox("Exige base", value=True, key="n_exb")
+            n_exal    = st.checkbox("Exige alíquota", value=True, key="n_exal")
+            n_eximp   = st.checkbox("Exige valor ICMS", value=True, key="n_eximp")
+        with c3:
+            n_alpad   = st.number_input("Alíquota padrão (%):", 0.0, 100.0, 12.0, key="n_alpad")
+            n_bcampo  = st.selectbox("Campo p/ sugerir base:", ["VL_ITEM", "VL_DOC", ""], key="n_bcampo")
+            n_formula = st.selectbox("Fórmula:", ["base * aliq / 100", "zero"], key="n_form")
+            n_crit    = st.selectbox("Criticidade:", ["critica", "aviso", "info"], key="n_crit")
+
+        if st.button("💾 Salvar Regra", type="primary"):
+            if not n_id or not n_cst:
+                st.error("ID e CST são obrigatórios.")
+            else:
+                nova = RegraFiscal(
+                    id=n_id, cst_icms=n_cst, cfop=n_cfop, ind_oper=n_oper,
+                    descricao=n_desc, exige_base=n_exb, exige_aliquota=n_exal,
+                    exige_valor_icms=n_eximp, base_campo_sugerido=n_bcampo,
+                    aliquota_padrao=n_alpad, formula=n_formula,
+                    permite_base_zero=not n_exb, permite_icms_zero=not n_eximp,
+                    criticidade=n_crit,
+                )
+                st.session_state["regras"] = [r for r in regras if r.id != n_id] + [nova]
+                salvar_regras(st.session_state["regras"])
+                st.success(f"✅ Regra '{n_id}' salva."); st.rerun()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _no_file():
+    st.info("Nenhum arquivo SPED carregado. Acesse **Upload** para iniciar.")
+
+
+# ════════════════════════════════════════════════════════════════════════════════
+# ████████████████████████  MAIN  ███════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════════════════════
+
+ROTEADOR = {
+    "📊 Dashboard":          pg_dashboard,
+    "📂 Upload":             pg_upload,
+    "🗂️ Blocos":             pg_blocos,
+    "📋 Registros":          pg_registros,
+    "🧾 Notas Fiscais":      pg_notas,
+    "📦 Itens (C170)":       pg_itens,
+    "⚠️ Inconsistências":    pg_inconsistencias,
+    "🔧 Correções em Massa": pg_massa,
+    "✏️ Editor Manual":      pg_editor,
+    "📤 Exportação":         pg_exportacao,
+    "📜 Log de Auditoria":   pg_auditoria,
+    "⚙️ Motor de Regras":    pg_regras,
+}
+
 
 def main():
-    init_session_state()
-    render_sidebar()
-    
-    current_view = st.session_state.current_view
-    
-    if current_view == 'dashboard':
-        render_dashboard()
-    elif current_view == 'upload':
-        render_upload()
-    elif current_view == 'blocks':
-        render_blocks_view()
-    elif current_view == 'documents':
-        render_documents_view()
-    elif current_view == 'items':
-        render_items_view()
-    elif current_view == 'inconsistencies':
-        render_inconsistencies()
-    elif current_view == 'mass_correction':
-        render_mass_correction()
-    elif current_view == 'editor':
-        render_editor()
-    elif current_view == 'export':
-        render_export()
-    elif current_view == 'audit':
-        render_audit_log()
-    elif current_view == 'rules_config':
-        render_rules_config()
+    _init()
+    st.markdown(CSS, unsafe_allow_html=True)
+    pagina = sidebar()
+    fn = ROTEADOR.get(pagina)
+    if fn:
+        fn()
+    else:
+        st.error(f"Página não encontrada: {pagina}")
+
 
 if __name__ == "__main__":
     main()
