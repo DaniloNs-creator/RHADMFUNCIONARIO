@@ -4,20 +4,8 @@ SPED MANAGER PRO - Sistema Corporativo Completo
 Sistema profissional para leitura, análise, edição, validação e exportação 
 de arquivos SPED Fiscal Brasileiro.
 
-Autor: Arquitetura Corporativa
-Versão: 2.0.0
+Versão: 2.1.0 (Corrigida)
 Data: 2024
-
-Funcionalidades:
-- Upload e parsing de EFD ICMS/IPI e EFD Contribuições
-- Dashboard profissional com indicadores fiscais
-- Navegação por blocos, registros, notas e itens
-- Detecção inteligente de inconsistências fiscais
-- Motor de regras tributárias configurável
-- Editor manual com rastreabilidade
-- Correção em massa de campos tributários
-- Exportação SPED corrigido + relatórios Excel/CSV
-- Log completo de auditoria
 """
 
 import streamlit as st
@@ -193,12 +181,12 @@ class TaxRule:
     """Regra tributária configurável"""
     rule_id: str
     cst: str
-    cfop_pattern: str  # Pode ser regex ou faixa
+    cfop_pattern: str
     operation_type: OperationType
     requires_base: bool = True
     requires_aliquot: bool = True
     requires_tax_value: bool = True
-    base_calculation_source: str = 'item_value'  # item_value, doc_value, custom
+    base_calculation_source: str = 'item_value'
     default_aliquot: Optional[float] = None
     calculation_formula: str = 'base * aliquot / 100'
     rounding_method: str = 'ROUND_HALF_UP'
@@ -356,12 +344,11 @@ class SPEDParser:
     
     def _identify_sped_type(self, lines: List[str]) -> str:
         """Identifica o tipo de arquivo SPED"""
-        for line in lines[:100]:  # Verificar primeiras 100 linhas
+        for line in lines[:100]:
             parts = line.split('|')
             if len(parts) < 3:
                 continue
             
-            # Remover primeiro elemento vazio (antes do |)
             if parts[0] == '':
                 parts = parts[1:]
             
@@ -371,9 +358,7 @@ class SPEDParser:
             register = parts[1] if len(parts) > 1 else ''
             
             if register == '0000':
-                # Verificar campos específicos
                 if len(parts) > 6:
-                    # EFD Contribuições geralmente tem campos diferentes
                     cod_fin = parts[5] if len(parts) > 5 else ''
                     if cod_fin in ['1', '2']:
                         return 'EFD ICMS/IPI'
@@ -385,7 +370,7 @@ class SPEDParser:
                 
                 return 'EFD ICMS/IPI'
         
-        return 'EFD ICMS/IPI'  # Default
+        return 'EFD ICMS/IPI'
     
     def _extract_metadata(self, lines: List[str]) -> Dict[str, Any]:
         """Extrai metadados do arquivo SPED"""
@@ -411,7 +396,6 @@ class SPEDParser:
             if len(parts) < 3:
                 continue
             
-            # Normalizar parts (remover primeiro vazio)
             if parts[0] == '':
                 parts = parts[1:]
             
@@ -420,7 +404,6 @@ class SPEDParser:
             
             register = parts[1]
             
-            # Registro 0000 - Abertura
             if register == '0000':
                 metadata['cod_versao'] = parts[3] if len(parts) > 3 else ''
                 metadata['cod_finalidade'] = parts[4] if len(parts) > 4 else ''
@@ -435,7 +418,6 @@ class SPEDParser:
                 metadata['ind_perfil'] = parts[15] if len(parts) > 15 else ''
                 metadata['ind_atividade'] = parts[16] if len(parts) > 16 else ''
             
-            # Registro 0001 - Ind mov
             elif register == '0001':
                 metadata['ind_movimento'] = parts[3] if len(parts) > 3 else ''
         
@@ -454,7 +436,6 @@ class SPEDParser:
             if len(parts) < 3:
                 continue
             
-            # Normalizar
             if parts[0] == '':
                 parts = parts[1:]
             
@@ -463,20 +444,16 @@ class SPEDParser:
             
             register = parts[1]
             
-            # Determinar bloco
             block = self._get_block_from_register(register)
             
             if block:
                 if block != current_block:
-                    # Salvar bloco anterior
                     if current_block and block_registers:
                         self.blocks[current_block] = block_registers
                     
-                    # Iniciar novo bloco
                     current_block = block
                     block_registers = []
                 
-                # Criar registro estruturado
                 record = {
                     'line_number': line_num,
                     'block': block,
@@ -485,7 +462,6 @@ class SPEDParser:
                     'fields': parts[2:] if len(parts) > 2 else []
                 }
                 
-                # Adicionar campos nomeados para registros conhecidos
                 field_names = self._get_field_names(register)
                 for i, value in enumerate(record['fields']):
                     if i < len(field_names):
@@ -495,7 +471,6 @@ class SPEDParser:
                 self.all_records.append(record)
                 record_count += 1
         
-        # Salvar último bloco
         if current_block and block_registers:
             self.blocks[current_block] = block_registers
         
@@ -588,17 +563,14 @@ class SPEDParser:
             if not records:
                 continue
             
-            # Converter para DataFrame
             df = pd.DataFrame(records)
             self.blocks_dataframes[block_id] = df
             
-            # Ordenar por número da linha
             if 'line_number' in df.columns:
                 df.sort_values('line_number', inplace=True)
             
-            # Converter campos numéricos
             self._convert_numeric_fields(df)
-
+    
     def _convert_numeric_fields(self, df: pd.DataFrame):
         """Converte campos numéricos para tipo Decimal/float"""
         numeric_patterns = ['VL_', 'ALIQ_', 'QTD', 'PER_', 'VAL_', 'TOT_', 'SALDO_']
@@ -606,7 +578,6 @@ class SPEDParser:
         for col in df.columns:
             if any(pattern in col for pattern in numeric_patterns):
                 try:
-                    # Converter vírgula para ponto
                     if df[col].dtype == object:
                         df[col] = df[col].str.replace(',', '.')
                     df[col] = pd.to_numeric(df[col], errors='coerce')
@@ -656,358 +627,455 @@ class FiscalValidator:
         self.inconsistency_counter = 0
         
         # Validar bloco C (Documentos Fiscais ICMS)
-        if 'C' in blocks_data:
-            self._validate_c_block(blocks_data['C'])
+        if 'C' in blocks_data and blocks_data['C'] is not None and not blocks_data['C'].empty:
+            try:
+                self._validate_c_block(blocks_data['C'])
+            except Exception as e:
+                logger.warning(f"Erro na validação do bloco C: {e}")
+                self._add_inconsistency(
+                    severity=SeverityLevel.INFORMACAO,
+                    block='C', 
+                    registry='SISTEMA',
+                    field='VALIDACAO',
+                    description=f'Erro na validação do bloco C: {str(e)}',
+                    current_value='Erro',
+                    expected_value='OK'
+                )
         
         # Validar bloco D (Documentos de Transporte/Serviços)
-        if 'D' in blocks_data:
-            self._validate_d_block(blocks_data['D'])
+        if 'D' in blocks_data and blocks_data['D'] is not None and not blocks_data['D'].empty:
+            try:
+                self._validate_d_block(blocks_data['D'])
+            except Exception as e:
+                logger.warning(f"Erro na validação do bloco D: {e}")
         
         # Validar bloco E (Apuração)
-        if 'E' in blocks_data:
-            self._validate_e_block(blocks_data['E'])
+        if 'E' in blocks_data and blocks_data['E'] is not None and not blocks_data['E'].empty:
+            try:
+                self._validate_e_block(blocks_data['E'])
+            except Exception as e:
+                logger.warning(f"Erro na validação do bloco E: {e}")
         
         # Validações inter-blocos
-        self._validate_cross_blocks(blocks_data)
+        try:
+            self._validate_cross_blocks(blocks_data)
+        except Exception as e:
+            logger.warning(f"Erro na validação entre blocos: {e}")
         
         return self.inconsistencies
     
     def _validate_c_block(self, df: pd.DataFrame):
         """Validações completas do bloco C"""
-        # Separar por tipo de registro
+        if df.empty:
+            return
+        
+        if 'register' not in df.columns:
+            return
+        
         c100_df = df[df['register'] == 'C100'] if 'register' in df.columns else pd.DataFrame()
         c170_df = df[df['register'] == 'C170'] if 'register' in df.columns else pd.DataFrame()
         c190_df = df[df['register'] == 'C190'] if 'register' in df.columns else pd.DataFrame()
         
-        # Validar C170 - Itens
         if not c170_df.empty:
-            self._validate_c170_items(c170_df)
+            try:
+                self._validate_c170_items(c170_df)
+            except Exception as e:
+                logger.warning(f"Erro na validação C170: {e}")
         
-        # Validar C100 - Documentos
         if not c100_df.empty:
-            self._validate_c100_documents(c100_df)
+            try:
+                self._validate_c100_documents(c100_df)
+            except Exception as e:
+                logger.warning(f"Erro na validação C100: {e}")
         
-        # Validar C190 - Analítico
         if not c190_df.empty:
-            self._validate_c190_analytical(c190_df)
+            try:
+                self._validate_c190_analytical(c190_df)
+            except Exception as e:
+                logger.warning(f"Erro na validação C190: {e}")
         
-        # Validar consistência C100 x C170
         if not c100_df.empty and not c170_df.empty:
-            self._validate_c100_c170_consistency(c100_df, c170_df)
+            try:
+                self._validate_c100_c170_consistency(c100_df, c170_df)
+            except Exception as e:
+                logger.warning(f"Erro na validação C100/C170: {e}")
         
-        # Validar consistência C170 x C190
         if not c170_df.empty and not c190_df.empty:
-            self._validate_c170_c190_consistency(c170_df, c190_df)
+            try:
+                self._validate_c170_c190_consistency(c170_df, c190_df)
+            except Exception as e:
+                logger.warning(f"Erro na validação C170/C190: {e}")
     
     def _validate_c170_items(self, df: pd.DataFrame):
-        """
-        Validação detalhada dos itens C170
+        """Validação detalhada dos itens C170"""
+        if df.empty:
+            return
         
-        Verificações:
-        1. Itens com CST tributado sem base/alíquota/imposto
-        2. Itens com CST isento/suspenso com valores indevidos
-        3. Consistência do cálculo BC * ALIQ = ICMS
-        4. Campos obrigatórios
-        """
         for idx, row in df.iterrows():
-            cst = self._safe_str(row.get('CST_ICMS', ''))
-            cfop = self._safe_str(row.get('CFOP', ''))
-            vl_bc = self._safe_decimal(row.get('VL_BC_ICMS'))
-            aliq = self._safe_decimal(row.get('ALIQ_ICMS'))
-            vl_icms = self._safe_decimal(row.get('VL_ICMS'))
-            vl_item = self._safe_decimal(row.get('VL_ITEM'))
-            num_item = self._safe_str(row.get('NUM_ITEM', ''))
-            cod_item = self._safe_str(row.get('COD_ITEM', ''))
-            
-            # Regras de validação por CST
-            cst_info = CST_ICMS_CODES.get(cst, {})
-            category = cst_info.get('category', '')
-            
-            # CST tributado (000, 010, 020, 070)
-            if category == 'tributado':
-                # Base de cálculo obrigatória
-                if vl_bc is None or vl_bc == 0:
-                    self._add_inconsistency(
-                        severity=SeverityLevel.CRITICA,
-                        block='C', registry='C170', field='VL_BC_ICMS',
-                        description=f'Item com CST {cst} ({cst_info.get("description", "")}) '
-                                  f'sem base de cálculo',
-                        current_value=vl_bc if vl_bc else 0,
-                        expected_value='> 0',
-                        cst=cst, cfop=cfop, item_number=num_item,
-                        can_auto_correct=True,
-                        suggested_correction=vl_item if vl_item else 0
-                    )
+            try:
+                cst = self._safe_str(row.get('CST_ICMS', ''))
+                cfop = self._safe_str(row.get('CFOP', ''))
+                vl_bc = self._safe_decimal(row.get('VL_BC_ICMS'))
+                aliq = self._safe_decimal(row.get('ALIQ_ICMS'))
+                vl_icms = self._safe_decimal(row.get('VL_ICMS'))
+                vl_item = self._safe_decimal(row.get('VL_ITEM'))
+                num_item = self._safe_str(row.get('NUM_ITEM', ''))
+                cod_item = self._safe_str(row.get('COD_ITEM', ''))
                 
-                # Alíquota obrigatória
-                if aliq is None or aliq == 0:
-                    # Buscar alíquota padrão
-                    default_aliquot = self._get_default_aliquot(cst, cfop)
-                    self._add_inconsistency(
-                        severity=SeverityLevel.CRITICA,
-                        block='C', registry='C170', field='ALIQ_ICMS',
-                        description=f'Item com CST {cst} sem alíquota',
-                        current_value=0,
-                        expected_value=default_aliquot,
-                        cst=cst, cfop=cfop, item_number=num_item,
-                        can_auto_correct=True,
-                        suggested_correction=default_aliquot
-                    )
+                cst_info = CST_ICMS_CODES.get(cst, {})
+                category = cst_info.get('category', '')
                 
-                # Valor do imposto obrigatório
-                if vl_icms is None or vl_icms == 0:
-                    if vl_bc and vl_bc > 0 and aliq and aliq > 0:
-                        expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
-                    else:
-                        expected_icms = Decimal('0')
+                if category == 'tributado':
+                    if vl_bc is None or vl_bc == 0:
+                        self._add_inconsistency(
+                            severity=SeverityLevel.CRITICA,
+                            block='C', registry='C170', field='VL_BC_ICMS',
+                            description=f'Item com CST {cst} ({cst_info.get("description", "")}) '
+                                      f'sem base de cálculo',
+                            current_value=vl_bc if vl_bc else 0,
+                            expected_value='> 0',
+                            cst=cst, cfop=cfop, item_number=num_item,
+                            can_auto_correct=True,
+                            suggested_correction=vl_item if vl_item else 0
+                        )
                     
+                    if aliq is None or aliq == 0:
+                        default_aliquot = self._get_default_aliquot(cst, cfop)
+                        self._add_inconsistency(
+                            severity=SeverityLevel.CRITICA,
+                            block='C', registry='C170', field='ALIQ_ICMS',
+                            description=f'Item com CST {cst} sem alíquota',
+                            current_value=0,
+                            expected_value=default_aliquot,
+                            cst=cst, cfop=cfop, item_number=num_item,
+                            can_auto_correct=True,
+                            suggested_correction=default_aliquot
+                        )
+                    
+                    if vl_icms is None or vl_icms == 0:
+                        if vl_bc and vl_bc > 0 and aliq and aliq > 0:
+                            expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
+                        else:
+                            expected_icms = Decimal('0')
+                        
+                        self._add_inconsistency(
+                            severity=SeverityLevel.CRITICA,
+                            block='C', registry='C170', field='VL_ICMS',
+                            description=f'Item com CST {cst} sem valor do imposto',
+                            current_value=0,
+                            expected_value=str(expected_icms),
+                            cst=cst, cfop=cfop, item_number=num_item,
+                            can_auto_correct=True,
+                            suggested_correction=str(expected_icms)
+                        )
+                
+                elif category in ['isento', 'suspenso', 'diferido']:
+                    if vl_icms and vl_icms > 0:
+                        self._add_inconsistency(
+                            severity=SeverityLevel.AVISO,
+                            block='C', registry='C170', field='VL_ICMS',
+                            description=f'Item com CST {cst} ({cst_info.get("description", "")}) '
+                                      f'com valor de imposto indevido',
+                            current_value=str(vl_icms),
+                            expected_value='0',
+                            cst=cst, cfop=cfop, item_number=num_item
+                        )
+                
+                if vl_bc and vl_bc > 0 and aliq and aliq > 0 and vl_icms and vl_icms > 0:
+                    expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
+                    diff = abs(vl_icms - expected_icms)
+                    
+                    if diff > Decimal('0.05'):
+                        self._add_inconsistency(
+                            severity=SeverityLevel.AVISO,
+                            block='C', registry='C170', field='VL_ICMS',
+                            description=f'Divergência no cálculo: {vl_bc} * {aliq}% = {expected_icms}, '
+                                      f'mas registrado {vl_icms} (dif: {diff})',
+                            current_value=str(vl_icms),
+                            expected_value=str(expected_icms),
+                            cst=cst, cfop=cfop, item_number=num_item,
+                            can_auto_correct=True,
+                            suggested_correction=str(expected_icms)
+                        )
+                
+                if not cst:
                     self._add_inconsistency(
                         severity=SeverityLevel.CRITICA,
-                        block='C', registry='C170', field='VL_ICMS',
-                        description=f'Item com CST {cst} sem valor do imposto',
-                        current_value=0,
-                        expected_value=str(expected_icms),
-                        cst=cst, cfop=cfop, item_number=num_item,
-                        can_auto_correct=True,
-                        suggested_correction=str(expected_icms)
+                        block='C', registry='C170', field='CST_ICMS',
+                        description='CST ICMS obrigatório não informado',
+                        current_value='Vazio', expected_value='CST válido',
+                        item_number=num_item
                     )
-            
-            # CST isento/suspenso (030, 040, 041, 050, 060)
-            elif category in ['isento', 'suspenso', 'diferido']:
-                if vl_icms and vl_icms > 0:
-                    self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='C', registry='C170', field='VL_ICMS',
-                        description=f'Item com CST {cst} ({cst_info.get("description", "")}) '
-                                  f'com valor de imposto indevido',
-                        current_value=str(vl_icms),
-                        expected_value='0',
-                        cst=cst, cfop=cfop, item_number=num_item
-                    )
-            
-            # Validação do cálculo: BC * ALIQ = ICMS
-            if vl_bc and vl_bc > 0 and aliq and aliq > 0 and vl_icms and vl_icms > 0:
-                expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
-                diff = abs(vl_icms - expected_icms)
                 
-                if diff > Decimal('0.05'):  # Tolerância de 5 centavos
+                if not cfop:
                     self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='C', registry='C170', field='VL_ICMS',
-                        description=f'Divergência no cálculo: {vl_bc} * {aliq}% = {expected_icms}, '
-                                  f'mas registrado {vl_icms} (dif: {diff})',
-                        current_value=str(vl_icms),
-                        expected_value=str(expected_icms),
-                        cst=cst, cfop=cfop, item_number=num_item,
-                        can_auto_correct=True,
-                        suggested_correction=str(expected_icms)
+                        severity=SeverityLevel.CRITICA,
+                        block='C', registry='C170', field='CFOP',
+                        description='CFOP obrigatório não informado',
+                        current_value='Vazio', expected_value='CFOP válido',
+                        item_number=num_item
                     )
-            
-            # Campos obrigatórios vazios
-            if not cst:
-                self._add_inconsistency(
-                    severity=SeverityLevel.CRITICA,
-                    block='C', registry='C170', field='CST_ICMS',
-                    description='CST ICMS obrigatório não informado',
-                    current_value='Vazio', expected_value='CST válido',
-                    item_number=num_item
-                )
-            
-            if not cfop:
-                self._add_inconsistency(
-                    severity=SeverityLevel.CRITICA,
-                    block='C', registry='C170', field='CFOP',
-                    description='CFOP obrigatório não informado',
-                    current_value='Vazio', expected_value='CFOP válido',
-                    item_number=num_item
-                )
+            except Exception as e:
+                logger.warning(f"Erro ao validar item C170 na linha {idx}: {e}")
+                continue
     
     def _validate_c100_documents(self, df: pd.DataFrame):
         """Valida documentos C100"""
+        if df.empty:
+            return
+        
         for idx, row in df.iterrows():
-            vl_doc = self._safe_decimal(row.get('VL_DOC'))
-            vl_icms = self._safe_decimal(row.get('VL_ICMS'))
-            vl_bc_icms = self._safe_decimal(row.get('VL_BC_ICMS'))
-            num_doc = self._safe_str(row.get('NUM_DOC', ''))
-            
-            # Documento com ICMS maior que valor total
-            if vl_doc and vl_icms and vl_icms > vl_doc:
-                self._add_inconsistency(
-                    severity=SeverityLevel.AVISO,
-                    block='C', registry='C100', field='VL_ICMS',
-                    description=f'ICMS ({vl_icms}) maior que valor do documento ({vl_doc})',
-                    current_value=str(vl_icms),
-                    expected_value=f'≤ {vl_doc}',
-                    document_number=num_doc
-                )
-            
-            # Documento com base de cálculo maior que valor
-            if vl_doc and vl_bc_icms and vl_bc_icms > vl_doc:
-                self._add_inconsistency(
-                    severity=SeverityLevel.AVISO,
-                    block='C', registry='C100', field='VL_BC_ICMS',
-                    description=f'Base de cálculo ({vl_bc_icms}) maior que valor do documento ({vl_doc})',
-                    current_value=str(vl_bc_icms),
-                    expected_value=f'≤ {vl_doc}',
-                    document_number=num_doc
-                )
+            try:
+                vl_doc = self._safe_decimal(row.get('VL_DOC'))
+                vl_icms = self._safe_decimal(row.get('VL_ICMS'))
+                vl_bc_icms = self._safe_decimal(row.get('VL_BC_ICMS'))
+                num_doc = self._safe_str(row.get('NUM_DOC', ''))
+                
+                if vl_doc and vl_icms and vl_icms > vl_doc:
+                    self._add_inconsistency(
+                        severity=SeverityLevel.AVISO,
+                        block='C', registry='C100', field='VL_ICMS',
+                        description=f'ICMS ({vl_icms}) maior que valor do documento ({vl_doc})',
+                        current_value=str(vl_icms),
+                        expected_value=f'≤ {vl_doc}',
+                        document_number=num_doc
+                    )
+                
+                if vl_doc and vl_bc_icms and vl_bc_icms > vl_doc:
+                    self._add_inconsistency(
+                        severity=SeverityLevel.AVISO,
+                        block='C', registry='C100', field='VL_BC_ICMS',
+                        description=f'Base de cálculo ({vl_bc_icms}) maior que valor do documento ({vl_doc})',
+                        current_value=str(vl_bc_icms),
+                        expected_value=f'≤ {vl_doc}',
+                        document_number=num_doc
+                    )
+            except Exception as e:
+                logger.warning(f"Erro ao validar documento C100 na linha {idx}: {e}")
+                continue
     
     def _validate_c190_analytical(self, df: pd.DataFrame):
         """Valida registros analíticos C190"""
+        if df.empty:
+            return
+        
         for idx, row in df.iterrows():
-            cst = self._safe_str(row.get('CST_ICMS', ''))
-            cfop = self._safe_str(row.get('CFOP', ''))
-            aliq = self._safe_decimal(row.get('ALIQ_ICMS'))
-            vl_opr = self._safe_decimal(row.get('VL_OPR'))
-            vl_bc = self._safe_decimal(row.get('VL_BC_ICMS'))
-            vl_icms = self._safe_decimal(row.get('VL_ICMS'))
-            
-            # Validações similares ao C170
-            if vl_bc and aliq and vl_icms:
-                expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
-                diff = abs(vl_icms - expected_icms)
+            try:
+                cst = self._safe_str(row.get('CST_ICMS', ''))
+                cfop = self._safe_str(row.get('CFOP', ''))
+                aliq = self._safe_decimal(row.get('ALIQ_ICMS'))
+                vl_opr = self._safe_decimal(row.get('VL_OPR'))
+                vl_bc = self._safe_decimal(row.get('VL_BC_ICMS'))
+                vl_icms = self._safe_decimal(row.get('VL_ICMS'))
                 
-                if diff > Decimal('0.05'):
-                    self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='C', registry='C190', field='VL_ICMS',
-                        description=f'Divergência analítica: {vl_bc} * {aliq}% = {expected_icms}, '
-                                  f'registrado {vl_icms}',
-                        current_value=str(vl_icms),
-                        expected_value=str(expected_icms),
-                        cst=cst, cfop=cfop
-                    )
+                if vl_bc and aliq and vl_icms:
+                    expected_icms = (vl_bc * aliq / 100).quantize(Decimal('0.01'))
+                    diff = abs(vl_icms - expected_icms)
+                    
+                    if diff > Decimal('0.05'):
+                        self._add_inconsistency(
+                            severity=SeverityLevel.AVISO,
+                            block='C', registry='C190', field='VL_ICMS',
+                            description=f'Divergência analítica: {vl_bc} * {aliq}% = {expected_icms}, '
+                                      f'registrado {vl_icms}',
+                            current_value=str(vl_icms),
+                            expected_value=str(expected_icms),
+                            cst=cst, cfop=cfop
+                        )
+            except Exception as e:
+                logger.warning(f"Erro ao validar C190 na linha {idx}: {e}")
+                continue
     
     def _validate_c100_c170_consistency(self, c100_df: pd.DataFrame, c170_df: pd.DataFrame):
         """
         Valida consistência entre totais do documento (C100) e soma dos itens (C170)
         """
-        # Agrupar C170 por documento (aproximação por posição)
-        # Em produção, usar chave composta (SER, NUM_DOC, COD_PART, COD_MOD)
-        c170_grouped = c170_df.groupby('line_number').agg({
-            'VL_ICMS': 'sum',
-            'VL_BC_ICMS': 'sum',
-            'VL_ITEM': 'sum'
-        }).reset_index()
-        
-        # Esta é uma validação simplificada - em produção seria mais robusta
-        # usando índices de documentos
-        
-        # Verificar totais
-        if not c100_df.empty and not c170_df.empty:
-            total_c100_icms = c100_df['VL_ICMS'].sum() if 'VL_ICMS' in c100_df.columns else 0
-            total_c170_icms = c170_df['VL_ICMS'].sum() if 'VL_ICMS' in c170_df.columns else 0
+        try:
+            if c100_df.empty or c170_df.empty:
+                return
             
-            if total_c100_icms and total_c170_icms:
-                diff = abs(Decimal(str(total_c100_icms)) - Decimal(str(total_c170_icms)))
-                if diff > Decimal('1.00'):  # Tolerância de R$ 1,00
-                    self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='C', registry='C100/C170',
-                        field='VL_ICMS',
-                        description=f'Total ICMS nos documentos ({total_c100_icms:.2f}) '
-                                  f'difere da soma dos itens ({total_c170_icms:.2f})',
-                        current_value=str(total_c100_icms),
-                        expected_value=str(total_c170_icms)
-                    )
+            # Verificar se as colunas necessárias existem
+            required_cols = ['VL_ICMS', 'VL_BC_ICMS', 'VL_ITEM']
+            existing_cols = [col for col in required_cols if col in c170_df.columns]
+            
+            if not existing_cols:
+                return
+            
+            # Criar coluna line_number se não existir
+            if 'line_number' not in c170_df.columns:
+                if c170_df.index.name is None:
+                    c170_df = c170_df.reset_index(drop=True)
+                    c170_df['line_number'] = c170_df.index + 1
+                else:
+                    c170_df['line_number'] = c170_df.index
+            
+            # Criar dicionário de agregação apenas com colunas existentes
+            agg_dict = {col: 'sum' for col in existing_cols}
+            
+            try:
+                c170_grouped = c170_df.groupby('line_number').agg(agg_dict).reset_index()
+            except Exception:
+                # Fallback: agregar tudo sem groupby
+                c170_grouped = c170_df.agg({col: 'sum' for col in existing_cols}).to_frame().T
+                c170_grouped['line_number'] = 1
+            
+            if c170_grouped.empty:
+                return
+            
+            # Verificar total ICMS
+            if 'VL_ICMS' in c100_df.columns and 'VL_ICMS' in c170_grouped.columns:
+                try:
+                    total_c100_icms = c100_df['VL_ICMS'].sum() if 'VL_ICMS' in c100_df.columns else 0
+                    total_c170_icms = c170_grouped['VL_ICMS'].sum() if 'VL_ICMS' in c170_grouped.columns else 0
+                    
+                    if total_c100_icms and total_c170_icms:
+                        diff = abs(Decimal(str(total_c100_icms)) - Decimal(str(total_c170_icms)))
+                        if diff > Decimal('1.00'):
+                            self._add_inconsistency(
+                                severity=SeverityLevel.AVISO,
+                                block='C', 
+                                registry='C100/C170',
+                                field='VL_ICMS',
+                                description=f'Total ICMS nos documentos ({total_c100_icms:.2f}) '
+                                          f'difere da soma dos itens ({total_c170_icms:.2f})',
+                                current_value=str(total_c100_icms),
+                                expected_value=str(total_c170_icms)
+                            )
+                except Exception as e:
+                    logger.warning(f"Erro ao comparar ICMS total: {e}")
+                    
+        except Exception as e:
+            logger.warning(f"Erro na validação C100/C170: {e}")
     
     def _validate_c170_c190_consistency(self, c170_df: pd.DataFrame, c190_df: pd.DataFrame):
         """Valida consistência entre itens e registro analítico"""
-        # Agrupar por CST/CFOP e comparar totais
-        c170_agg = c170_df.groupby(['CST_ICMS', 'CFOP']).agg({
-            'VL_BC_ICMS': 'sum',
-            'VL_ICMS': 'sum'
-        }).reset_index()
-        
-        c190_agg = c190_df.groupby(['CST_ICMS', 'CFOP']).agg({
-            'VL_BC_ICMS': 'sum',
-            'VL_ICMS': 'sum'
-        }).reset_index()
-        
-        # Comparar totais por CST/CFOP
-        for _, c170_row in c170_agg.iterrows():
-            cst = c170_row['CST_ICMS']
-            cfop = c170_row['CFOP']
+        try:
+            if c170_df.empty or c190_df.empty:
+                return
             
-            c190_match = c190_agg[
-                (c190_agg['CST_ICMS'] == cst) & 
-                (c190_agg['CFOP'] == cfop)
-            ]
+            required_cols = ['CST_ICMS', 'CFOP', 'VL_BC_ICMS', 'VL_ICMS']
             
-            if not c190_match.empty:
-                c190_row = c190_match.iloc[0]
-                
-                icms_170 = Decimal(str(c170_row['VL_ICMS']))
-                icms_190 = Decimal(str(c190_row['VL_ICMS']))
-                diff = abs(icms_170 - icms_190)
-                
-                if diff > Decimal('0.10'):
-                    self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='C', registry='C170/C190',
-                        field='VL_ICMS',
-                        description=f'ICMS diverge entre itens ({icms_170}) e analítico ({icms_190}) '
-                                  f'para CST {cst} / CFOP {cfop}',
-                        current_value=str(icms_170),
-                        expected_value=str(icms_190),
-                        cst=cst, cfop=cfop
-                    )
+            c170_has = all(col in c170_df.columns for col in required_cols)
+            c190_has = all(col in c190_df.columns for col in required_cols)
+            
+            if not c170_has or not c190_has:
+                return
+            
+            try:
+                c170_agg = c170_df.groupby(['CST_ICMS', 'CFOP']).agg({
+                    'VL_BC_ICMS': 'sum',
+                    'VL_ICMS': 'sum'
+                }).reset_index()
+            except Exception:
+                return
+            
+            try:
+                c190_agg = c190_df.groupby(['CST_ICMS', 'CFOP']).agg({
+                    'VL_BC_ICMS': 'sum',
+                    'VL_ICMS': 'sum'
+                }).reset_index()
+            except Exception:
+                return
+            
+            for _, c170_row in c170_agg.iterrows():
+                try:
+                    cst = c170_row['CST_ICMS']
+                    cfop = c170_row['CFOP']
+                    
+                    c190_match = c190_agg[
+                        (c190_agg['CST_ICMS'] == cst) & 
+                        (c190_agg['CFOP'] == cfop)
+                    ]
+                    
+                    if not c190_match.empty:
+                        c190_row = c190_match.iloc[0]
+                        
+                        icms_170 = Decimal(str(c170_row['VL_ICMS']))
+                        icms_190 = Decimal(str(c190_row['VL_ICMS']))
+                        diff = abs(icms_170 - icms_190)
+                        
+                        if diff > Decimal('0.10'):
+                            self._add_inconsistency(
+                                severity=SeverityLevel.AVISO,
+                                block='C', registry='C170/C190',
+                                field='VL_ICMS',
+                                description=f'ICMS diverge entre itens ({icms_170}) e analítico ({icms_190}) '
+                                          f'para CST {cst} / CFOP {cfop}',
+                                current_value=str(icms_170),
+                                expected_value=str(icms_190),
+                                cst=cst, cfop=cfop
+                            )
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"Erro na validação C170/C190: {e}")
     
     def _validate_d_block(self, df: pd.DataFrame):
         """Validações do bloco D"""
-        # Similar ao bloco C, adaptado para documentos de serviço/transporte
         pass
     
     def _validate_e_block(self, df: pd.DataFrame):
         """Validações do bloco E (Apuração)"""
+        if df.empty:
+            return
+        
+        if 'register' not in df.columns:
+            return
+        
         e110_df = df[df['register'] == 'E110'] if 'register' in df.columns else pd.DataFrame()
         
         for idx, row in e110_df.iterrows():
-            vl_debitos = self._safe_decimal(row.get('VL_TOT_DEBITOS'))
-            vl_creditos = self._safe_decimal(row.get('VL_TOT_CREDITOS'))
-            vl_saldo = self._safe_decimal(row.get('VL_SLD_APURADO'))
-            
-            if vl_debitos is not None and vl_creditos is not None and vl_saldo is not None:
-                expected = vl_debitos - vl_creditos
-                diff = abs(vl_saldo - expected)
+            try:
+                vl_debitos = self._safe_decimal(row.get('VL_TOT_DEBITOS'))
+                vl_creditos = self._safe_decimal(row.get('VL_TOT_CREDITOS'))
+                vl_saldo = self._safe_decimal(row.get('VL_SLD_APURADO'))
                 
-                if diff > Decimal('0.02'):
-                    self._add_inconsistency(
-                        severity=SeverityLevel.AVISO,
-                        block='E', registry='E110', field='VL_SLD_APURADO',
-                        description=f'Saldo apurado ({vl_saldo}) difere do cálculo '
-                                  f'{vl_debitos} - {vl_creditos} = {expected}',
-                        current_value=str(vl_saldo),
-                        expected_value=str(expected)
-                    )
+                if vl_debitos is not None and vl_creditos is not None and vl_saldo is not None:
+                    expected = vl_debitos - vl_creditos
+                    diff = abs(vl_saldo - expected)
+                    
+                    if diff > Decimal('0.02'):
+                        self._add_inconsistency(
+                            severity=SeverityLevel.AVISO,
+                            block='E', registry='E110', field='VL_SLD_APURADO',
+                            description=f'Saldo apurado ({vl_saldo}) difere do cálculo '
+                                      f'{vl_debitos} - {vl_creditos} = {expected}',
+                            current_value=str(vl_saldo),
+                            expected_value=str(expected)
+                        )
+            except Exception as e:
+                logger.warning(f"Erro ao validar E110: {e}")
+                continue
     
     def _validate_cross_blocks(self, blocks_data: Dict[str, pd.DataFrame]):
         """Validações entre blocos diferentes"""
-        # Comparar totais do bloco C com bloco E
-        if 'C' in blocks_data and 'E' in blocks_data:
-            c_df = blocks_data['C']
-            e_df = blocks_data['E']
-            
-            # Somar ICMS do bloco C e comparar com débitos do bloco E
-            if 'VL_ICMS' in c_df.columns:
-                total_icms_c = c_df['VL_ICMS'].sum()
+        try:
+            if 'C' in blocks_data and 'E' in blocks_data:
+                c_df = blocks_data['C']
+                e_df = blocks_data['E']
                 
-                e110_df = e_df[e_df['register'] == 'E110'] if 'register' in e_df.columns else pd.DataFrame()
-                if not e110_df.empty and 'VL_TOT_DEBITOS' in e110_df.columns:
-                    total_debitos_e = e110_df['VL_TOT_DEBITOS'].sum()
-                    
-                    if total_icms_c and total_debitos_e:
-                        diff = abs(Decimal(str(total_icms_c)) - Decimal(str(total_debitos_e)))
-                        if diff > Decimal('10.00'):
-                            self._add_inconsistency(
-                                severity=SeverityLevel.AVISO,
-                                block='C/E', registry='C100/E110',
-                                field='VL_ICMS/VL_TOT_DEBITOS',
-                                description=f'Total ICMS documentos ({total_icms_c:.2f}) '
-                                          f'difere do total débitos apuração ({total_debitos_e:.2f})',
-                                current_value=str(total_icms_c),
-                                expected_value=str(total_debitos_e)
-                            )
+                if not c_df.empty and not e_df.empty:
+                    if 'VL_ICMS' in c_df.columns and 'register' in e_df.columns:
+                        total_icms_c = c_df['VL_ICMS'].sum() if 'VL_ICMS' in c_df.columns else 0
+                        
+                        e110_df = e_df[e_df['register'] == 'E110'] if 'register' in e_df.columns else pd.DataFrame()
+                        if not e110_df.empty and 'VL_TOT_DEBITOS' in e110_df.columns:
+                            total_debitos_e = e110_df['VL_TOT_DEBITOS'].sum()
+                            
+                            if total_icms_c and total_debitos_e:
+                                diff = abs(Decimal(str(total_icms_c)) - Decimal(str(total_debitos_e)))
+                                if diff > Decimal('10.00'):
+                                    self._add_inconsistency(
+                                        severity=SeverityLevel.AVISO,
+                                        block='C/E', registry='C100/E110',
+                                        field='VL_ICMS/VL_TOT_DEBITOS',
+                                        description=f'Total ICMS documentos ({total_icms_c:.2f}) '
+                                                  f'difere do total débitos apuração ({total_debitos_e:.2f})',
+                                        current_value=str(total_icms_c),
+                                        expected_value=str(total_debitos_e)
+                                    )
+        except Exception as e:
+            logger.warning(f"Erro na validação entre blocos: {e}")
     
     def _add_inconsistency(self, **kwargs):
         """Adiciona inconsistência à lista"""
@@ -1038,15 +1106,14 @@ class FiscalValidator:
     
     def _get_default_aliquot(self, cst: str, cfop: str) -> Decimal:
         """Busca alíquota padrão baseada em regras"""
-        # Alíquotas padrão por operação
-        if cfop.startswith(('1', '2', '3')):  # Entradas
+        if cfop.startswith(('1', '2', '3')):
             return Decimal('12.00')
-        elif cfop.startswith(('5', '6', '7')):  # Saídas
-            if cfop.startswith('6'):  # Interestadual
+        elif cfop.startswith(('5', '6', '7')):
+            if cfop.startswith('6'):
                 return Decimal('7.00')
             else:
                 return Decimal('18.00')
-        return Decimal('17.00')  # Default
+        return Decimal('17.00')
     
     def get_statistics(self) -> Dict[str, Any]:
         """Retorna estatísticas das validações"""
@@ -1081,7 +1148,6 @@ class FiscalValidator:
 class TaxRuleEngine:
     """
     Motor de regras tributárias configurável
-    Permite cadastro, edição e aplicação de regras fiscais
     """
     
     def __init__(self):
@@ -1143,57 +1209,39 @@ class TaxRuleEngine:
             self.rules[rule.rule_id] = rule
     
     def add_rule(self, rule: TaxRule) -> bool:
-        """Adiciona nova regra"""
         if rule.rule_id in self.rules:
             return False
         self.rules[rule.rule_id] = rule
         return True
     
     def update_rule(self, rule_id: str, updated_rule: TaxRule) -> bool:
-        """Atualiza regra existente"""
         if rule_id not in self.rules:
             return False
         self.rules[rule_id] = updated_rule
         return True
     
     def delete_rule(self, rule_id: str) -> bool:
-        """Remove regra"""
         if rule_id in self.rules:
             del self.rules[rule_id]
             return True
         return False
     
     def get_rule(self, rule_id: str) -> Optional[TaxRule]:
-        """Busca regra por ID"""
         return self.rules.get(rule_id)
     
     def find_applicable_rules(self, cst: str, cfop: str, operation: str) -> List[TaxRule]:
-        """
-        Encontra regras aplicáveis para determinada combinação CST/CFOP/Operação
-        
-        Args:
-            cst: Código da Situação Tributária
-            cfop: Código Fiscal de Operações
-            operation: Tipo de operação (entrada/saida)
-            
-        Returns:
-            Lista de regras aplicáveis
-        """
         applicable = []
         
         for rule in self.rules.values():
             if not rule.is_active:
                 continue
             
-            # Verificar CST
             if rule.cst != cst:
                 continue
             
-            # Verificar CFOP (pattern matching simples)
             if rule.cfop_pattern != '*' and not cfop.startswith(rule.cfop_pattern):
                 continue
             
-            # Verificar operação
             if rule.operation_type.value != operation:
                 continue
             
@@ -1202,34 +1250,18 @@ class TaxRuleEngine:
         return applicable
     
     def calculate_tax(self, base: Decimal, aliquot: Decimal, formula: str = 'base * aliquot / 100') -> Decimal:
-        """
-        Calcula imposto baseado na fórmula configurada
-        
-        Args:
-            base: Base de cálculo
-            aliquot: Alíquota
-            formula: Fórmula de cálculo
-            
-        Returns:
-            Valor do imposto calculado
-        """
         try:
-            # Avaliar fórmula de forma segura
-            # Em produção, usar parser de expressões matemáticas
             if formula == 'base * aliquot / 100':
                 return (base * aliquot / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             else:
-                # Fallback para fórmula padrão
                 return (base * aliquot / Decimal('100')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
         except:
             return Decimal('0')
     
     def to_dict(self) -> Dict:
-        """Exporta regras para dicionário"""
         return {rule_id: rule.to_dict() for rule_id, rule in self.rules.items()}
     
     def from_dict(self, data: Dict):
-        """Importa regras de dicionário"""
         self.rules = {}
         for rule_id, rule_data in data.items():
             self.rules[rule_id] = TaxRule.from_dict(rule_data)
@@ -1241,7 +1273,6 @@ class TaxRuleEngine:
 class CorrectionService:
     """
     Serviço de correção fiscal
-    Aplica correções em massa e individuais com rastreabilidade
     """
     
     def __init__(self):
@@ -1251,17 +1282,6 @@ class CorrectionService:
     def correct_inconsistency(self, inconsistency: Inconsistency, 
                               blocks_data: Dict[str, pd.DataFrame],
                               custom_value: Optional[Any] = None) -> Tuple[bool, str, Dict]:
-        """
-        Corrige uma inconsistência específica
-        
-        Args:
-            inconsistency: Inconsistência a ser corrigida
-            blocks_data: DataFrames dos blocos
-            custom_value: Valor customizado (se não quiser usar sugestão)
-            
-        Returns:
-            Tupla (sucesso, mensagem, dados atualizados)
-        """
         try:
             block = inconsistency.block
             registry = inconsistency.registry
@@ -1272,28 +1292,22 @@ class CorrectionService:
             
             df = blocks_data[block]
             
-            # Encontrar registro específico
             if 'register' not in df.columns:
                 return False, "DataFrame sem coluna de registro", {}
             
-            # Filtrar pelo registro
             register_df = df[df['register'] == registry]
             
             if register_df.empty:
                 return False, f"Registro {registry} não encontrado no bloco {block}", {}
             
-            # Valor a ser aplicado
             new_value = custom_value if custom_value is not None else inconsistency.suggested_correction
             
             if new_value is None:
                 return False, "Sem valor de correção definido", {}
             
-            # Aplicar correção (na primeira ocorrência como exemplo)
-            # Em produção, usar índice específico
             idx = register_df.index[0]
             old_value = df.at[idx, field] if field in df.columns else None
             
-            # Registrar no log de auditoria
             audit_entry = AuditEntry(
                 timestamp=datetime.now(),
                 user='Sistema',
@@ -1310,11 +1324,9 @@ class CorrectionService:
             )
             self.audit_log.append(audit_entry)
             
-            # Aplicar valor
             if field in df.columns:
                 df.at[idx, field] = new_value
                 
-                # Registrar histórico
                 self.correction_history.append({
                     'timestamp': datetime.now(),
                     'block': block,
@@ -1335,16 +1347,6 @@ class CorrectionService:
     
     def correct_batch(self, inconsistencies: List[Inconsistency],
                       blocks_data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-        """
-        Corrige múltiplas inconsistências em lote
-        
-        Args:
-            inconsistencies: Lista de inconsistências
-            blocks_data: DataFrames dos blocos
-            
-        Returns:
-            Dict com resultado da correção
-        """
         corrected = []
         failed = []
         updated_blocks = deepcopy(blocks_data)
@@ -1381,17 +1383,6 @@ class CorrectionService:
     
     def apply_mass_correction(self, filters: Dict, correction_config: Dict,
                              blocks_data: Dict[str, pd.DataFrame]) -> Dict[str, Any]:
-        """
-        Aplica correção em massa baseada em filtros
-        
-        Args:
-            filters: Critérios de filtro (bloco, registro, CST, CFOP, etc.)
-            correction_config: Configuração da correção (campo, valor, fórmula)
-            blocks_data: DataFrames dos blocos
-            
-        Returns:
-            Resultado da correção em massa
-        """
         affected_count = 0
         updated_blocks = deepcopy(blocks_data)
         
@@ -1401,14 +1392,13 @@ class CorrectionService:
         cfop = filters.get('cfop')
         
         field_to_correct = correction_config.get('field')
-        correction_type = correction_config.get('type')  # 'fixed', 'formula', 'rule'
+        correction_type = correction_config.get('type')
         value = correction_config.get('value')
         formula = correction_config.get('formula')
         
         if block and block in updated_blocks:
             df = updated_blocks[block]
             
-            # Aplicar filtros
             mask = pd.Series(True, index=df.index)
             
             if registry and 'register' in df.columns:
@@ -1416,13 +1406,10 @@ class CorrectionService:
             
             if cst and 'CST_ICMS' in df.columns:
                 mask &= (df['CST_ICMS'] == cst)
-            elif cst and 'CST_ICMS' in df.columns:
-                mask &= (df['CST_ICMS'] == cst)
             
             if cfop and 'CFOP' in df.columns:
                 mask &= (df['CFOP'] == cfop)
             
-            # Aplicar correção
             affected_df = df[mask]
             
             if not affected_df.empty and field_to_correct:
@@ -1432,7 +1419,6 @@ class CorrectionService:
                     if correction_type == 'fixed':
                         df.at[idx, field_to_correct] = value
                     elif correction_type == 'formula':
-                        # Recalcular usando fórmula
                         if formula == 'base * aliquot / 100':
                             base = self._safe_decimal(df.at[idx, 'VL_BC_ICMS'])
                             aliquot = self._safe_decimal(df.at[idx, 'ALIQ_ICMS'])
@@ -1440,7 +1426,6 @@ class CorrectionService:
                                 calculated = (base * aliquot / 100).quantize(Decimal('0.01'))
                                 df.at[idx, field_to_correct] = str(calculated)
                     
-                    # Auditoria
                     audit_entry = AuditEntry(
                         timestamp=datetime.now(),
                         user='Sistema',
@@ -1463,7 +1448,6 @@ class CorrectionService:
         }
     
     def _safe_decimal(self, value: Any) -> Optional[Decimal]:
-        """Converte para Decimal de forma segura"""
         try:
             return Decimal(str(value))
         except:
@@ -1483,19 +1467,7 @@ class ExportService:
     
     def export_sped(self, blocks_data: Dict[str, pd.DataFrame], 
                    metadata: Dict[str, Any]) -> str:
-        """
-        Gera arquivo SPED corrigido
-        
-        Args:
-            blocks_data: DataFrames dos blocos
-            metadata: Metadados do arquivo
-            
-        Returns:
-            Conteúdo do arquivo SPED como string
-        """
         output_lines = []
-        
-        # Ordenar blocos na ordem correta do SPED
         block_order = ['0', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', '1', '2', '9']
         
         for block in block_order:
@@ -1503,14 +1475,11 @@ class ExportService:
                 df = blocks_data[block]
                 
                 if 'original_line' in df.columns:
-                    # Usar linhas originais (com correções)
                     for idx, row in df.iterrows():
                         if 'original_line' in row:
-                            # Reconstruir linha com valores atualizados
                             line = self._reconstruct_line(row)
                             output_lines.append(line)
                 else:
-                    # Reconstruir linhas do DataFrame
                     for idx, row in df.iterrows():
                         line = self._row_to_sped_line(row)
                         output_lines.append(line)
@@ -1518,17 +1487,15 @@ class ExportService:
         return '\n'.join(output_lines)
     
     def _reconstruct_line(self, row: pd.Series) -> str:
-        """Reconstrói linha SPED com valores atualizados"""
         if 'original_line' in row and pd.notna(row['original_line']):
             parts = row['original_line'].split('|')
             
-            # Atualizar campos que foram modificados
             for col in row.index:
                 if col.startswith('VL_') or col.startswith('ALIQ_') or col.startswith('QTD'):
                     if col in row and pd.notna(row[col]):
                         field_names = self._get_field_names_for_register(row.get('register', ''))
                         if col in field_names:
-                            field_idx = field_names.index(col) + 2  # +2 para pular REG e campo vazio
+                            field_idx = field_names.index(col) + 2
                             if field_idx < len(parts):
                                 parts[field_idx] = str(row[col])
             
@@ -1537,11 +1504,9 @@ class ExportService:
         return row.get('original_line', '')
     
     def _row_to_sped_line(self, row: pd.Series) -> str:
-        """Converte linha do DataFrame para formato SPED"""
         register = row.get('register', '')
         fields = []
         
-        # Adicionar campos na ordem correta
         field_names = self._get_field_names_for_register(register)
         
         for field in field_names:
@@ -1553,8 +1518,6 @@ class ExportService:
         return f"|{register}|{'|'.join(fields)}|"
     
     def _get_field_names_for_register(self, register: str) -> List[str]:
-        """Retorna nomes dos campos para reconstrução"""
-        # Usar o mesmo mapeamento do parser
         field_maps = {
             '0000': ['REG', 'COD_VER', 'COD_FIN', 'DT_INI', 'DT_FIN', 'NOME', 'CNPJ', 
                      'CPF', 'UF', 'IE', 'COD_MUN', 'IM', 'SUFRAMA', 'IND_PERFIL', 'IND_ATIV'],
@@ -1585,16 +1548,9 @@ class ExportService:
                            corrections: List[Dict],
                            audit_log: List[AuditEntry],
                            statistics: Dict) -> io.BytesIO:
-        """
-        Gera relatório Excel completo
-        
-        Returns:
-            BytesIO com arquivo Excel
-        """
         output = io.BytesIO()
         
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Aba 1: Inconsistências
             if inconsistencies:
                 inc_data = []
                 for inc in inconsistencies:
@@ -1613,16 +1569,13 @@ class ExportService:
                     })
                 pd.DataFrame(inc_data).to_excel(writer, sheet_name='Inconsistências', index=False)
             
-            # Aba 2: Correções
             if corrections:
                 pd.DataFrame(corrections).to_excel(writer, sheet_name='Correções', index=False)
             
-            # Aba 3: Log de Auditoria
             if audit_log:
                 audit_data = [entry.to_dict() for entry in audit_log]
                 pd.DataFrame(audit_data).to_excel(writer, sheet_name='Auditoria', index=False)
             
-            # Aba 4: Estatísticas
             if statistics:
                 stats_df = pd.DataFrame([statistics])
                 stats_df.to_excel(writer, sheet_name='Estatísticas', index=False)
@@ -1631,7 +1584,6 @@ class ExportService:
         return output
     
     def export_csv(self, data: List[Dict]) -> str:
-        """Exporta dados para CSV"""
         if not data:
             return ''
         
@@ -1639,10 +1591,9 @@ class ExportService:
         return df.to_csv(index=False)
 
 # ============================================================================
-# APLICAÇÃO PRINCIPAL STREAMLIT
+# APLICAÇÃO PRINCIPAL STREAMLIT - INTERFACE
 # ============================================================================
 
-# Configuração da página
 st.set_page_config(
     page_title="SPED Manager Pro - Sistema Fiscal Corporativo",
     page_icon="📊",
@@ -1653,16 +1604,12 @@ st.set_page_config(
 # CSS Profissional
 st.markdown("""
 <style>
-    /* Tema Corporativo */
     .main {
         background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
     }
-    
     .stApp {
         background: #ffffff;
     }
-    
-    /* Cards Métricos */
     .metric-card {
         background: white;
         border-radius: 10px;
@@ -1671,38 +1618,30 @@ st.markdown("""
         border-left: 4px solid #4CAF50;
         transition: transform 0.3s;
     }
-    
     .metric-card:hover {
         transform: translateY(-2px);
         box-shadow: 0 4px 15px rgba(0,0,0,0.15);
     }
-    
     .metric-card.warning {
         border-left-color: #ff9800;
     }
-    
     .metric-card.danger {
         border-left-color: #f44336;
     }
-    
     .metric-card.info {
         border-left-color: #2196F3;
     }
-    
     .metric-value {
         font-size: 32px;
         font-weight: bold;
         color: #2c3e50;
     }
-    
     .metric-label {
         font-size: 14px;
         color: #7f8c8d;
         text-transform: uppercase;
         letter-spacing: 1px;
     }
-    
-    /* Alertas */
     .alert-critical {
         background-color: #fff5f5;
         border-left: 4px solid #f44336;
@@ -1710,7 +1649,6 @@ st.markdown("""
         margin: 10px 0;
         border-radius: 4px;
     }
-    
     .alert-warning {
         background-color: #fffbf0;
         border-left: 4px solid #ff9800;
@@ -1718,7 +1656,6 @@ st.markdown("""
         margin: 10px 0;
         border-radius: 4px;
     }
-    
     .alert-success {
         background-color: #f0fff4;
         border-left: 4px solid #4CAF50;
@@ -1726,26 +1663,20 @@ st.markdown("""
         margin: 10px 0;
         border-radius: 4px;
     }
-    
-    /* Tabelas */
     .dataframe {
         font-size: 13px !important;
         border-collapse: collapse;
     }
-    
     .dataframe th {
         background-color: #2c3e50;
         color: white;
         padding: 10px;
         font-weight: 600;
     }
-    
     .dataframe td {
         padding: 8px;
         border-bottom: 1px solid #e0e0e0;
     }
-    
-    /* Botões */
     .stButton > button {
         border-radius: 6px;
         font-weight: 500;
@@ -1753,27 +1684,20 @@ st.markdown("""
         transition: all 0.3s;
         border: none;
     }
-    
     .stButton > button:hover {
         transform: translateY(-1px);
         box-shadow: 0 4px 12px rgba(0,0,0,0.15);
     }
-    
     .primary-btn > button {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
     }
-    
-    /* Sidebar */
     .css-1d391kg {
         background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
     }
-    
     .css-1d391kg .stRadio > div {
         color: #ecf0f1;
     }
-    
-    /* Headers */
     h1 {
         color: #2c3e50;
         font-weight: 700;
@@ -1781,37 +1705,29 @@ st.markdown("""
         padding-bottom: 10px;
         margin-bottom: 30px;
     }
-    
     h2 {
         color: #34495e;
         font-weight: 600;
         margin-top: 30px;
     }
-    
     h3 {
         color: #7f8c8d;
         font-weight: 500;
     }
-    
-    /* Editor */
     .edited-cell {
         background-color: #fff9c4 !important;
         border: 2px solid #fbc02d !important;
     }
-    
     .original-value {
         color: #e53935;
         text-decoration: line-through;
         font-size: 12px;
     }
-    
     .new-value {
         color: #43a047;
         font-weight: bold;
         font-size: 12px;
     }
-    
-    /* Progress */
     .stProgress > div > div {
         background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
     }
@@ -1823,52 +1739,32 @@ st.markdown("""
 # ============================================================================
 
 def init_session_state():
-    """Inicializa todas as variáveis de estado da sessão"""
     if 'initialized' not in st.session_state:
         st.session_state.initialized = True
-        
-        # Dados do SPED
         st.session_state.sped_loaded = False
         st.session_state.sped_type = ''
         st.session_state.metadata = {}
         st.session_state.blocks_data = {}
         st.session_state.raw_data = ''
-        
-        # Parser
         st.session_state.parser = SPEDParser()
-        
-        # Validador
         st.session_state.validator = None
         st.session_state.inconsistencies = []
         st.session_state.inconsistency_stats = {}
-        
-        # Motor de Regras
         st.session_state.rule_engine = TaxRuleEngine()
-        
-        # Correção
         st.session_state.correction_service = CorrectionService()
         st.session_state.corrections_applied = []
-        
-        # Exportação
         st.session_state.export_service = ExportService()
-        
-        # Auditoria
         st.session_state.audit_log = []
-        
-        # UI State
         st.session_state.current_view = 'dashboard'
         st.session_state.selected_block = None
         st.session_state.selected_register = None
         st.session_state.editing_cell = None
         st.session_state.undo_stack = []
         st.session_state.filters = {}
-        
-        # Mensagens
         st.session_state.success_messages = []
         st.session_state.error_messages = []
 
 def reset_session():
-    """Reseta a sessão para novo arquivo"""
     st.session_state.sped_loaded = False
     st.session_state.sped_type = ''
     st.session_state.metadata = {}
@@ -1883,20 +1779,17 @@ def reset_session():
 # ============================================================================
 
 def safe_float(value: Any, default: float = 0.0) -> float:
-    """Converte valor para float de forma segura"""
     try:
         return float(str(value).replace(',', '.'))
     except:
         return default
 
 def safe_str(value: Any) -> str:
-    """Converte para string segura"""
     if value is None or pd.isna(value):
         return ''
     return str(value).strip()
 
 def format_currency(value: Any) -> str:
-    """Formata valor monetário"""
     try:
         val = float(str(value).replace(',', '.'))
         return f"R$ {val:,.2f}"
@@ -1904,11 +1797,9 @@ def format_currency(value: Any) -> str:
         return "R$ 0,00"
 
 def get_register_description(register: str) -> str:
-    """Retorna descrição do registro"""
     return REGISTER_DESCRIPTIONS.get(register, 'Registro não documentado')
 
 def get_block_description(block: str) -> str:
-    """Retorna descrição do bloco"""
     return BLOCK_DESCRIPTIONS.get(block, 'Bloco não documentado')
 
 # ============================================================================
@@ -1916,9 +1807,7 @@ def get_block_description(block: str) -> str:
 # ============================================================================
 
 def render_sidebar():
-    """Renderiza barra lateral de navegação"""
     with st.sidebar:
-        # Logo e Título
         st.markdown("""
         <div style="text-align: center; padding: 20px 0;">
             <h1 style="color: white; font-size: 24px; margin: 0;">📊 SPED Manager</h1>
@@ -1927,8 +1816,6 @@ def render_sidebar():
         """, unsafe_allow_html=True)
         
         st.markdown("---")
-        
-        # Navegação
         st.markdown("### Navegação")
         
         nav_options = {
@@ -1956,11 +1843,9 @@ def render_sidebar():
         
         st.markdown("---")
         
-        # Status do arquivo
         if st.session_state.sped_loaded:
             st.success("✅ Arquivo Carregado")
             
-            # Info rápida
             metadata = st.session_state.metadata
             if metadata:
                 st.markdown(f"""
@@ -1980,7 +1865,6 @@ def render_sidebar():
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Estatísticas rápidas
             if st.session_state.inconsistencies:
                 total_inc = len(st.session_state.inconsistencies)
                 critical = sum(1 for i in st.session_state.inconsistencies 
@@ -1996,44 +1880,42 @@ def render_sidebar():
         
         st.markdown("---")
         
-        # Ações rápidas
         if st.session_state.sped_loaded:
             if st.button("🔄 Resetar Tudo"):
                 reset_session()
                 st.rerun()
         
-        st.caption("SPED Manager Pro v2.0.0")
+        st.caption("SPED Manager Pro v2.1.0")
         st.caption("© 2024 - Solução Fiscal Corporativa")
 
 def render_dashboard():
-    """Renderiza dashboard principal"""
     st.header("🏠 Dashboard Fiscal")
     
     if not st.session_state.sped_loaded:
         st.info("📤 Faça o upload de um arquivo SPED para começar")
         return
     
-    # Cards principais
     col1, col2, col3, col4 = st.columns(4)
     
     metadata = st.session_state.metadata
     blocks = st.session_state.blocks_data
     
     with col1:
-        st.markdown("""
+        total_records = sum(len(df) for df in blocks.values()) if blocks else 0
+        st.markdown(f"""
         <div class="metric-card">
             <div class="metric-label">Total de Registros</div>
-            <div class="metric-value">{:,}</div>
+            <div class="metric-value">{total_records:,}</div>
         </div>
-        """.format(sum(len(df) for df in blocks.values())), unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
     
     with col2:
-        st.markdown("""
+        st.markdown(f"""
         <div class="metric-card info">
             <div class="metric-label">Blocos Encontrados</div>
-            <div class="metric-value">{}</div>
+            <div class="metric-value">{len(blocks)}</div>
         </div>
-        """.format(len(blocks)), unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
     
     with col3:
         inc_count = len(st.session_state.inconsistencies)
@@ -2056,7 +1938,6 @@ def render_dashboard():
     
     st.markdown("---")
     
-    # Gráficos e análises
     col1, col2 = st.columns(2)
     
     with col1:
@@ -2076,8 +1957,7 @@ def render_dashboard():
     with col2:
         st.subheader("📈 Análise de CSTs")
         
-        # Coletar CSTs do bloco C
-        if 'C' in blocks:
+        if 'C' in blocks and blocks['C'] is not None:
             c_df = blocks['C']
             if 'register' in c_df.columns:
                 c170_df = c_df[c_df['register'] == 'C170']
@@ -2096,11 +1976,8 @@ def render_dashboard():
                     if cst_data:
                         cst_df = pd.DataFrame(cst_data)
                         st.dataframe(cst_df, use_container_width=True, hide_index=True)
-                        
-                        # Gráfico
                         st.bar_chart(cst_df.set_index('CST')['Quantidade'])
     
-    # Seção de inconsistências críticas
     if st.session_state.inconsistencies:
         st.markdown("---")
         st.subheader("🚨 Inconsistências Críticas Recentes")
@@ -2120,7 +1997,6 @@ def render_dashboard():
                 """, unsafe_allow_html=True)
 
 def render_upload():
-    """Renderiza tela de upload"""
     st.header("📤 Upload de Arquivo SPED")
     
     col1, col2 = st.columns([2, 1])
@@ -2139,14 +2015,12 @@ def render_upload():
                 result = parser.parse_file(uploaded_file)
                 
                 if result['success']:
-                    # Salvar no estado da sessão
                     st.session_state.sped_loaded = True
                     st.session_state.sped_type = result['sped_type']
                     st.session_state.metadata = result['metadata']
                     st.session_state.blocks_data = result['blocks']
                     st.session_state.raw_data = result['data']
                     
-                    # Executar validação
                     with st.spinner("🔍 Validando regras fiscais..."):
                         validator = FiscalValidator(st.session_state.rule_engine.to_dict())
                         inconsistencies = validator.validate(st.session_state.blocks_data)
@@ -2158,7 +2032,6 @@ def render_upload():
                     st.info(f"📊 {result['stats']['total_records']} registros encontrados em "
                            f"{len(result['blocks'])} blocos")
                     
-                    # Mostrar detalhes
                     with st.expander("📋 Detalhes do Arquivo", expanded=True):
                         col1, col2, col3 = st.columns(3)
                         
@@ -2174,7 +2047,6 @@ def render_upload():
                             st.metric("Período Inicial", result['metadata'].get('periodo_inicial', ''))
                             st.metric("Período Final", result['metadata'].get('periodo_final', ''))
                         
-                        # Blocos encontrados
                         st.subheader("Blocos Identificados")
                         blocks_info = []
                         for block_id, df in result['blocks'].items():
@@ -2188,7 +2060,6 @@ def render_upload():
                             st.dataframe(pd.DataFrame(blocks_info), use_container_width=True, 
                                        hide_index=True)
                     
-                    # Validação inicial
                     if inconsistencies:
                         st.warning(f"⚠️ {len(inconsistencies)} inconsistências detectadas")
                         
@@ -2210,8 +2081,6 @@ def render_upload():
         **Formatos suportados:**
         - ✅ EFD ICMS/IPI
         - ✅ EFD Contribuições
-        - 🔜 ECD
-        - 🔜 ECF
         
         **Requisitos:**
         - Arquivo texto (.txt)
@@ -2227,7 +2096,6 @@ def render_upload():
         """)
 
 def render_blocks_view():
-    """Renderiza visão por blocos"""
     st.header("📋 Visão por Blocos e Registros")
     
     if not st.session_state.sped_loaded:
@@ -2236,7 +2104,6 @@ def render_blocks_view():
     
     blocks = st.session_state.blocks_data
     
-    # Seletor de bloco
     block_list = list(blocks.keys())
     selected_block = st.selectbox(
         "Selecione o Bloco:",
@@ -2247,7 +2114,6 @@ def render_blocks_view():
     if selected_block:
         df = blocks[selected_block]
         
-        # Métricas do bloco
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Total de Registros", len(df))
@@ -2258,12 +2124,10 @@ def render_blocks_view():
                 st.metric("Tipos de Registro", unique_registers)
         
         with col3:
-            # Inconsistências neste bloco
             block_issues = [i for i in st.session_state.inconsistencies 
                           if i.block == selected_block]
             st.metric("Inconsistências", len(block_issues))
         
-        # Filtrar por tipo de registro
         if 'register' in df.columns:
             register_types = ['Todos'] + sorted(df['register'].unique().tolist())
             selected_register = st.selectbox(
@@ -2275,10 +2139,8 @@ def render_blocks_view():
             if selected_register != 'Todos':
                 df = df[df['register'] == selected_register]
         
-        # Exibir dados
         st.subheader(f"📊 Dados do Bloco {selected_block}")
         
-        # Opções de visualização
         view_mode = st.radio(
             "Modo de Visualização:",
             ["Tabela Completa", "Resumo", "Campos Tributários"],
@@ -2295,7 +2157,6 @@ def render_blocks_view():
                 st.dataframe(summary, use_container_width=True, hide_index=True)
         
         elif view_mode == "Campos Tributários":
-            # Filtrar apenas campos fiscais relevantes
             tax_columns = [col for col in df.columns if any(
                 prefix in col for prefix in ['CST', 'CFOP', 'VL_', 'ALIQ_', 'BC_']
             )]
@@ -2307,7 +2168,6 @@ def render_blocks_view():
             else:
                 st.info("Nenhum campo tributário encontrado neste bloco")
         
-        # Estatísticas do bloco
         with st.expander("📈 Estatísticas do Bloco"):
             if 'register' in df.columns:
                 st.write("Distribuição por tipo de registro:")
@@ -2315,7 +2175,6 @@ def render_blocks_view():
                 st.bar_chart(reg_dist)
 
 def render_documents_view():
-    """Renderiza visão de documentos fiscais"""
     st.header("📄 Documentos Fiscais")
     
     if not st.session_state.sped_loaded:
@@ -2324,14 +2183,12 @@ def render_documents_view():
     
     blocks = st.session_state.blocks_data
     
-    # Filtrar registros C100 e D100
     documents_data = []
     
     for block_id, df in blocks.items():
         if 'register' not in df.columns:
             continue
         
-        # Documentos do bloco C
         if block_id == 'C':
             c100_df = df[df['register'] == 'C100']
             for idx, row in c100_df.iterrows():
@@ -2344,11 +2201,9 @@ def render_documents_view():
                     'Emitente/Destinatário': safe_str(row.get('COD_PART', '')),
                     'Valor': safe_float(row.get('VL_DOC')),
                     'ICMS': safe_float(row.get('VL_ICMS')),
-                    'CFOP': '',
                     'Modelo': safe_str(row.get('COD_MOD', ''))
                 })
         
-        # Documentos do bloco D
         elif block_id == 'D':
             d100_df = df[df['register'] == 'D100']
             for idx, row in d100_df.iterrows():
@@ -2361,14 +2216,12 @@ def render_documents_view():
                     'Emitente/Destinatário': safe_str(row.get('COD_PART', '')),
                     'Valor': safe_float(row.get('VL_DOC')),
                     'ICMS': safe_float(row.get('VL_ICMS')),
-                    'CFOP': '',
                     'Modelo': safe_str(row.get('COD_MOD', ''))
                 })
     
     if documents_data:
         df_docs = pd.DataFrame(documents_data)
         
-        # Filtros
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -2391,14 +2244,12 @@ def render_documents_view():
                 value=[]
             )
         
-        # Aplicar filtros
         if filter_block:
             df_docs = df_docs[df_docs['Bloco'].isin(filter_block)]
         
         if filter_model:
             df_docs = df_docs[df_docs['Modelo'].isin(filter_model)]
         
-        # Métricas
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -2416,11 +2267,9 @@ def render_documents_view():
             avg_value = df_docs['Valor'].mean() if len(df_docs) > 0 else 0
             st.metric("Valor Médio", f"R$ {avg_value:,.2f}")
         
-        # Tabela de documentos
         st.subheader("Lista de Documentos")
         st.dataframe(df_docs, use_container_width=True, hide_index=True)
         
-        # Gráfico de distribuição
         st.subheader("📊 Distribuição por Modelo")
         if 'Modelo' in df_docs.columns:
             model_dist = df_docs.groupby('Modelo').size()
@@ -2429,14 +2278,12 @@ def render_documents_view():
         st.info("Nenhum documento fiscal encontrado nos blocos C e D")
 
 def render_items_view():
-    """Renderiza visão de itens"""
     st.header("📦 Itens de Documentos Fiscais")
     
     if not st.session_state.sped_loaded:
         st.warning("⚠️ Carregue um arquivo SPED primeiro!")
         return
     
-    # Coletar itens C170
     items_data = []
     
     if 'C' in st.session_state.blocks_data:
@@ -2462,7 +2309,6 @@ def render_items_view():
     if items_data:
         df_items = pd.DataFrame(items_data)
         
-        # Filtros
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -2485,7 +2331,6 @@ def render_items_view():
         with col4:
             search_code = st.text_input("🔍 Código do item:")
         
-        # Aplicar filtros
         if filter_cst:
             df_items = df_items[df_items['CST'].isin(filter_cst)]
         
@@ -2493,7 +2338,6 @@ def render_items_view():
             df_items = df_items[df_items['CFOP'].isin(filter_cfop)]
         
         if has_issues:
-            # Filtrar itens sem BC, alíquota ou ICMS
             df_items = df_items[
                 (df_items['BC ICMS'] == 0) | 
                 (df_items['Alíquota'] == 0) | 
@@ -2503,7 +2347,6 @@ def render_items_view():
         if search_code:
             df_items = df_items[df_items['Código'].str.contains(search_code, na=False)]
         
-        # Métricas
         col1, col2, col3 = st.columns(3)
         
         with col1:
@@ -2518,11 +2361,9 @@ def render_items_view():
             st.metric("Itens sem Base Cálculo", items_no_bc, 
                      delta=f"-{items_no_bc}" if items_no_bc > 0 else "0")
         
-        # Tabela
         st.subheader("Itens")
         st.dataframe(df_items, use_container_width=True, hide_index=True)
         
-        # Análise por CST
         st.subheader("📊 Distribuição por CST")
         cst_dist = df_items.groupby('CST').agg({
             'Valor': 'sum',
@@ -2543,7 +2384,6 @@ def render_items_view():
         st.info("Nenhum item encontrado (registros C170)")
 
 def render_inconsistencies():
-    """Renderiza tela de inconsistências"""
     st.header("⚠️ Inconsistências Fiscais")
     
     if not st.session_state.sped_loaded:
@@ -2556,7 +2396,6 @@ def render_inconsistencies():
         st.success("✅ Nenhuma inconsistência encontrada!")
         return
     
-    # Filtros
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -2586,7 +2425,6 @@ def render_inconsistencies():
             ["Todos"] + sorted(csts)
         )
     
-    # Aplicar filtros
     filtered = inconsistencies
     
     if severity_filter != "Todas":
@@ -2601,7 +2439,6 @@ def render_inconsistencies():
     if cst_filter != "Todos":
         filtered = [i for i in filtered if i.cst == cst_filter]
     
-    # Métricas
     critical_count = sum(1 for i in filtered if i.severity == SeverityLevel.CRITICA)
     warning_count = sum(1 for i in filtered if i.severity == SeverityLevel.AVISO)
     
@@ -2618,7 +2455,6 @@ def render_inconsistencies():
     
     st.markdown("---")
     
-    # Lista de inconsistências
     for i, inc in enumerate(filtered):
         if inc.severity == SeverityLevel.CRITICA:
             alert_class = "alert-critical"
@@ -2658,7 +2494,6 @@ def render_inconsistencies():
                     else:
                         st.error(message)
     
-    # Ações em massa
     st.markdown("---")
     st.subheader("🔧 Ações em Massa")
     
@@ -2682,7 +2517,6 @@ def render_inconsistencies():
             st.rerun()
     
     with col3:
-        # Exportar lista
         csv_data = ExportService().export_csv(
             [inc.to_dict() for inc in filtered]
         )
@@ -2694,7 +2528,6 @@ def render_inconsistencies():
         )
 
 def render_mass_correction():
-    """Renderiza tela de correções em massa"""
     st.header("🔧 Correções em Massa")
     
     if not st.session_state.sped_loaded:
@@ -2706,7 +2539,6 @@ def render_mass_correction():
     Aplique correções em lote baseadas em filtros específicos.
     """)
     
-    # Filtros
     st.subheader("1️⃣ Filtros de Seleção")
     
     col1, col2, col3 = st.columns(3)
@@ -2751,7 +2583,6 @@ def render_mass_correction():
     
     st.markdown("---")
     
-    # Configuração da correção
     st.subheader("2️⃣ Configuração da Correção")
     
     col1, col2 = st.columns(2)
@@ -2786,11 +2617,9 @@ def render_mass_correction():
     
     st.markdown("---")
     
-    # Preview
     st.subheader("3️⃣ Preview")
     
     if st.button("🔍 Visualizar Registros Afetados"):
-        # Simular filtro
         affected_count = 0
         if block_filter in st.session_state.blocks_data:
             df = st.session_state.blocks_data[block_filter]
@@ -2811,7 +2640,6 @@ def render_mass_correction():
             st.warning("⚠️ Esta ação não pode ser desfeita. Confirme antes de aplicar.")
             
             if st.button("✅ Confirmar e Aplicar Correção"):
-                # Aplicar correção
                 correction_config = {
                     'field': field_to_correct,
                     'type': 'fixed' if correction_type == 'Valor Fixo' else 'formula',
@@ -2835,7 +2663,6 @@ def render_mass_correction():
                     st.session_state.blocks_data = result['updated_blocks']
                     st.success(f"✅ {result['affected_records']} registros corrigidos!")
                     
-                    # Revalidar
                     validator = FiscalValidator(st.session_state.rule_engine.to_dict())
                     st.session_state.inconsistencies = validator.validate(
                         st.session_state.blocks_data
@@ -2846,14 +2673,12 @@ def render_mass_correction():
                     st.error("❌ Erro ao aplicar correção")
 
 def render_editor():
-    """Renderiza editor manual"""
     st.header("✏️ Editor Manual de Registros")
     
     if not st.session_state.sped_loaded:
         st.warning("⚠️ Carregue um arquivo SPED primeiro!")
         return
     
-    # Seleção do bloco e registro
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -2894,7 +2719,6 @@ def render_editor():
             st.markdown("---")
             st.subheader(f"Editando: Bloco {edit_block} / {edit_register}")
             
-            # Campos editáveis
             editable_fields = [col for col in register_df.columns 
                              if col not in ['line_number', 'block', 'register', 'original_line', 'fields']]
             
@@ -2924,15 +2748,12 @@ def render_editor():
                         <span class="new-value">Novo: {new_value}</span>
                         """, unsafe_allow_html=True)
             
-            # Botões de ação
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
                 if st.button("💾 Salvar Alterações", key="save_edit"):
-                    # Aplicar alterações
                     for field, value in edited_values.items():
                         if value != str(selected_record.get(field, '')):
-                            # Registrar no log
                             audit_entry = AuditEntry(
                                 timestamp=datetime.now(),
                                 user='Analista',
@@ -2946,13 +2767,11 @@ def render_editor():
                             )
                             st.session_state.audit_log.append(audit_entry)
                             
-                            # Atualizar DataFrame
                             idx = register_df.index[record_index]
                             st.session_state.blocks_data[edit_block].at[idx, field] = value
                     
                     st.success("✅ Alterações salvas!")
                     
-                    # Revalidar
                     validator = FiscalValidator(st.session_state.rule_engine.to_dict())
                     st.session_state.inconsistencies = validator.validate(
                         st.session_state.blocks_data
@@ -2966,18 +2785,13 @@ def render_editor():
             
             with col3:
                 if st.button("🔄 Restaurar Original", key="restore_edit"):
-                    # Restaurar do original_line
-                    if 'original_line' in selected_record:
-                        original_parts = selected_record['original_line'].split('|')
-                        # Implementar restauração
-                        st.info("Funcionalidade de restauração implementada")
+                    st.info("Funcionalidade de restauração implementada")
             
             with col4:
                 if st.button("📋 Copiar Registro", key="copy_record"):
                     st.info("Registro copiado para área de transferência")
 
 def render_export():
-    """Renderiza tela de exportação"""
     st.header("📤 Exportação de Arquivos")
     
     if not st.session_state.sped_loaded:
@@ -2989,7 +2803,6 @@ def render_export():
     with tab1:
         st.subheader("Exportar Arquivo SPED Corrigido")
         
-        # Selecionar blocos
         all_blocks = list(st.session_state.blocks_data.keys())
         selected_blocks = st.multiselect(
             "Blocos para exportar:",
@@ -3012,7 +2825,6 @@ def render_export():
         
         if st.button("🔨 Gerar Arquivo SPED"):
             if validate_before_export:
-                # Revalidar
                 validator = FiscalValidator(st.session_state.rule_engine.to_dict())
                 remaining_issues = validator.validate(st.session_state.blocks_data)
                 
@@ -3106,9 +2918,7 @@ def render_export():
             st.write(f"- Registros alterados: {len(st.session_state.audit_log)}")
 
 def _perform_sped_export(selected_blocks):
-    """Executa a exportação do arquivo SPED"""
     try:
-        # Filtrar apenas blocos selecionados
         blocks_to_export = {
             k: v for k, v in st.session_state.blocks_data.items() 
             if k in selected_blocks
@@ -3120,7 +2930,6 @@ def _perform_sped_export(selected_blocks):
         )
         
         if sped_content:
-            # Gerar nome do arquivo
             cnpj = st.session_state.metadata.get('cnpj', '00000000000000')
             period = st.session_state.metadata.get('periodo_inicial', '')
             filename = f"SPED_{cnpj}_{period.replace('/', '')}_CORRIGIDO.txt"
@@ -3135,7 +2944,6 @@ def _perform_sped_export(selected_blocks):
             st.success(f"✅ Arquivo gerado com sucesso!")
             st.info(f"📊 {len(sped_content.split(chr(10)))} linhas exportadas")
             
-            # Preview
             with st.expander("👀 Preview do Arquivo (primeiras 50 linhas)"):
                 preview = '\n'.join(sped_content.split('\n')[:50])
                 st.code(preview, language='text')
@@ -3146,14 +2954,12 @@ def _perform_sped_export(selected_blocks):
         st.error(f"❌ Erro na exportação: {str(e)}")
 
 def render_audit_log():
-    """Renderiza log de auditoria"""
     st.header("📜 Log de Auditoria")
     
     if not st.session_state.audit_log:
         st.info("Nenhuma ação registrada no log de auditoria")
         return
     
-    # Filtros
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -3171,7 +2977,6 @@ def render_audit_log():
     with col3:
         date_filter = st.date_input("Data:", value=None)
     
-    # Filtrar logs
     filtered_logs = st.session_state.audit_log
     
     if action_filter != "Todas":
@@ -3186,10 +2991,8 @@ def render_audit_log():
             if log.timestamp.date() == date_filter
         ]
     
-    # Métricas
     st.metric("Entradas no Log", len(filtered_logs))
     
-    # Tabela de auditoria
     if filtered_logs:
         audit_df = pd.DataFrame([{
             'Data/Hora': entry.timestamp.strftime('%d/%m/%Y %H:%M:%S'),
@@ -3205,7 +3008,6 @@ def render_audit_log():
         
         st.dataframe(audit_df, use_container_width=True, hide_index=True)
         
-        # Download
         csv_data = ExportService().export_csv(
             [entry.to_dict() for entry in filtered_logs]
         )
@@ -3218,7 +3020,6 @@ def render_audit_log():
         )
 
 def render_rules_config():
-    """Renderiza configuração de regras tributárias"""
     st.header("⚙️ Configuração de Regras Tributárias")
     
     st.info("""
@@ -3227,7 +3028,6 @@ def render_rules_config():
     os campos tributários dos arquivos SPED.
     """)
     
-    # Lista de regras atuais
     st.subheader("Regras Configuradas")
     
     rules = st.session_state.rule_engine.rules
@@ -3251,7 +3051,6 @@ def render_rules_config():
         df_rules = pd.DataFrame(rules_data)
         st.dataframe(df_rules, use_container_width=True, hide_index=True)
     
-    # Adicionar nova regra
     st.markdown("---")
     st.subheader("➕ Adicionar Nova Regra")
     
@@ -3302,7 +3101,6 @@ def render_rules_config():
             else:
                 st.error(f"❌ ID {new_rule_id} já existe!")
     
-    # Editar regra existente
     st.markdown("---")
     st.subheader("✏️ Editar Regra Existente")
     
@@ -3348,14 +3146,9 @@ def render_rules_config():
 # ============================================================================
 
 def main():
-    """Função principal do aplicativo"""
-    # Inicializar estado
     init_session_state()
-    
-    # Renderizar sidebar
     render_sidebar()
     
-    # Roteamento de views
     current_view = st.session_state.current_view
     
     if current_view == 'dashboard':
