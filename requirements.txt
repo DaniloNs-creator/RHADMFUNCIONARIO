@@ -1,8 +1,5 @@
-# Versões compatíveis com Python 3.14 e Streamlit Cloud
 streamlit>=1.35.0
-pandas>=2.2.0
-numpy>=1.26.0
+pandas>=2.0.0
+numpy>=1.24.0
 openpyxl>=3.1.0
-pandas-stubs>=2.2.0
-pyyaml>=6.0
-python-dateutil>=2.8.0
+plotly>=5.18.0
