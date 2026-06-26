@@ -1,15 +1,10 @@
 """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║          SPED AUDITOR — FISCAL INTELLIGENCE PLATFORM  v2.1                  ║
+║          SPED AUDITOR — FISCAL INTELLIGENCE PLATFORM  v2.2                  ║
 ║          EFD ICMS/IPI  +  EFD CONTRIBUIÇÕES (PIS/COFINS)                    ║
 ║          Arquivo único · Python + Streamlit                                  ║
 ║          Compatível com Streamlit 1.58+ / Python 3.14+                      ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
-
-Correções v2.1 (baseadas nos logs do Streamlit Cloud):
-  - st.radio("", ...) -> st.radio("Navegação", ...) — label vazio proibido em 3.14+
-  - use_container_width=True  -> width='stretch'  — deprecado após 2025-12-31
-  - use_container_width=False -> width='content'  — deprecado após 2025-12-31
 
 Execução:
     pip install streamlit pandas numpy openpyxl plotly
@@ -22,7 +17,7 @@ Execução:
 
 from __future__ import annotations
 
-import io, json, os, re, sys, uuid
+import io, json, os, re, sys, uuid, xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -46,7 +41,7 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={"About": "SPED Auditor v2.1 | EFD ICMS/IPI + EFD Contribuições"},
+    menu_items={"About": "SPED Auditor v2.2 | EFD ICMS/IPI + EFD Contribuições + CT-e"},
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1002,17 +997,6 @@ def _metricas(df,tipo):
     r["sem_base_cof"]=sem("VL_BC_COFINS"); r["sem_cof"]=sem("VL_COFINS")
     return r
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Helper: width compatível com Streamlit ≥1.45 e <1.45
-# ─────────────────────────────────────────────────────────────────────────────
-def _w(stretch=True):
-    """Retorna kwargs de largura compatíveis com Streamlit 1.45+ (width=) e anterior (use_container_width=)."""
-    import streamlit as _st
-    ver = tuple(int(x) for x in _st.__version__.split(".")[:2])
-    if ver >= (1, 45):
-        return {"width": "stretch" if stretch else "content"}
-    return {"use_container_width": stretch}
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # ████████████  INICIALIZAÇÃO  █████████████████████████████████████████████████
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1031,7 +1015,7 @@ def _init():
 PAGINAS=["📊 Dashboard","📂 Upload","🗂️ Blocos","📋 Registros",
          "🧾 Notas Fiscais","📦 Itens (C170/A170)","💰 PIS/COFINS",
          "⚠️ Inconsistências","🔧 Correções em Massa",
-         "✏️ Editor Manual","📤 Exportação","📜 Log de Auditoria","⚙️ Motor de Regras"]
+         "✏️ Editor Manual","📤 Exportação","📜 Log de Auditoria","⚙️ Motor de Regras","🚚 Importar CT-e"]
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 def sidebar():
@@ -1039,7 +1023,7 @@ def sidebar():
         st.markdown("""
         <div style="padding:10px 0 18px;text-align:center;">
           <span style="font-size:1.4rem;font-weight:800;color:#fff;">🔍 SPED Auditor</span><br>
-          <span style="font-size:.68rem;color:#7BAFD4;">EFD ICMS/IPI + Contribuições  v2.1</span>
+          <span style="font-size:.68rem;color:#7BAFD4;">EFD ICMS/IPI + Contribuições  v2.2</span>
         </div>""",unsafe_allow_html=True)
         res=st.session_state.get("resultado")
         if res:
@@ -1071,7 +1055,7 @@ def pg_upload():
         tipo_demo=st.radio("Demo:",["EFD ICMS/IPI","EFD Contribuições (PIS/COFINS)"],horizontal=True,key="td")
         usar_demo=st.checkbox("📁 Usar arquivo de demonstração",value=not bool(arq))
         usuario=st.text_input("Usuário da sessão:","analista")
-        if st.button("▶ Processar Arquivo",type="primary",**_w()):
+        if st.button("▶ Processar Arquivo",type="primary"):
             _processar(arq,usar_demo,tipo_demo,usuario)
     with c2:
         st.markdown("**Tipos suportados:**")
@@ -1144,7 +1128,6 @@ def pg_dashboard():
         dfb=df["bloco"].value_counts().reset_index(); dfb.columns=["Bloco","Qtd"]
         fig=px.bar(dfb,x="Bloco",y="Qtd",color="Bloco",color_discrete_sequence=px.colors.qualitative.Set2,template="plotly_white")
         fig.update_layout(showlegend=False,height=240,margin=dict(l=5,r=5,t=5,b=5))
-        # ── CORREÇÃO 2: use_container_width -> width='stretch'
         st.plotly_chart(fig,width="stretch")
     with g2:
         st.markdown('<div class="sec">Inconsistências por Tipo</div>',unsafe_allow_html=True)
@@ -1589,33 +1572,413 @@ def pg_regras():
                 st.session_state["regras"]=[r for r in regras if r.id!=ni]+[nova]
                 salvar_regras(st.session_state["regras"]); st.success(f"✅ Regra '{ni}' salva."); st.rerun()
 
+
 # ═══════════════════════════════════════════════════════════════════════════════
-# ████████████  MAIN  ████████████████████████████████████████████████████████
+# ████████████  IMPORTADOR DE XML CT-e  ███████████████████████████████████████
 # ═══════════════════════════════════════════════════════════════════════════════
+#
+# Suporta CT-e OS (Outros Serviços) e CT-e Normal (modelo 57).
+# Extrai campos suficientes para preencher D100, D101 e D105.
+# Namespace agnóstico: funciona com e sem prefixo cte:.
+#
+# Layout D100 (EFD Contribuições):
+#   IND_OPER|IND_EMIT|COD_PART|COD_MOD|COD_SIT|SER|SUB|NUM_DOC|CHV_CTE|
+#   DT_DOC|DT_A_P|TP_CT_E|CHV_CTE_REF|VL_DOC|VL_DESC|IND_FRT|VL_SERV|
+#   VL_BC_ICMS|ALIQ_ICMS|VL_ICMS|VL_NT|COD_INF|COD_CTA|
+#   CST_PIS|VL_BC_PIS|ALIQ_PIS|VL_PIS|CST_COFINS|VL_BC_COFINS|ALIQ_COFINS|VL_COFINS
+# ─────────────────────────────────────────────────────────────────────────────
 
-ROTEADOR={
-    "📊 Dashboard":          pg_dashboard,
-    "📂 Upload":             pg_upload,
-    "🗂️ Blocos":             pg_blocos,
-    "📋 Registros":          pg_registros,
-    "🧾 Notas Fiscais":      pg_notas,
-    "📦 Itens (C170/A170)":  pg_itens,
-    "💰 PIS/COFINS":         pg_pis_cofins,
-    "⚠️ Inconsistências":    pg_inconsistencias,
-    "🔧 Correções em Massa": pg_massa,
-    "✏️ Editor Manual":      pg_editor,
-    "📤 Exportação":         pg_exportacao,
-    "📜 Log de Auditoria":   pg_auditoria,
-    "⚙️ Motor de Regras":    pg_regras,
-}
+@dataclass
+class DadosCTe:
+    """Dados extraídos de um XML CT-e."""
+    # Identificação
+    chave:       str = ""
+    num_doc:     str = ""
+    serie:       str = ""
+    modelo:      str = "57"
+    dt_emissao:  str = ""      # DDMMAAAA
+    dt_acesso:   str = ""      # DDMMAAAA (data de entrada/acesso)
+    cod_sit:     str = "00"    # 00=Regular
+    tipo_cte:    str = "0"     # 0=Normal 3=SubCtrc 7=Complemento
+    ind_oper:    str = "0"     # 0=Entrada 1=Saída
+    ind_emit:    str = "1"     # 1=Emissão própria 2=Terceiros
+    # Participante
+    cnpj_emit:   str = ""
+    ie_emit:     str = ""
+    nome_emit:   str = ""
+    # Valores gerais
+    vl_doc:      str = ""      # VL_TOTAL do CT-e
+    vl_serv:     str = ""      # valor do serviço de transporte
+    vl_desc:     str = ""
+    # ICMS
+    cst_icms:    str = ""
+    vl_bc_icms:  str = ""
+    aliq_icms:   str = ""
+    vl_icms:     str = ""
+    # PIS
+    cst_pis:     str = ""
+    vl_bc_pis:   str = ""
+    aliq_pis:    str = ""
+    vl_pis:      str = ""
+    # COFINS
+    cst_cofins:  str = ""
+    vl_bc_cofins:str = ""
+    aliq_cofins: str = ""
+    vl_cofins:   str = ""
+    # Natureza do frete (D101/D105)
+    ind_nat_frt: str = "0"     # 0=Própria 1=Terceiros
+    # Erros de leitura
+    erros:       list[str] = field(default_factory=list)
 
-def main():
-    _init()
-    st.markdown(CSS,unsafe_allow_html=True)
-    pagina=sidebar()
-    fn=ROTEADOR.get(pagina)
-    if fn: fn()
-    else: st.error(f"Página não encontrada: {pagina}")
 
-if __name__=="__main__":
-    main()
+def _ns(tag: str, tree_ns: str) -> str:
+    """Monta tag com namespace ou sem."""
+    if tree_ns:
+        return f"{{{tree_ns}}}{tag}"
+    return tag
+
+
+def _txt(elem, *caminho, ns="") -> str:
+    """Percorre caminho de tags e retorna .text ou ''."""
+    atual = elem
+    for tag in caminho:
+        atual = atual.find(_ns(tag, ns))
+        if atual is None:
+            return ""
+    return (atual.text or "").strip()
+
+
+def _fmt_data_sped(data_iso: str) -> str:
+    """
+    Converte data ISO (AAAA-MM-DD ou AAAA-MM-DDTHH:MM:SS-HH:MM)
+    para DDMMAAAA do SPED.
+    """
+    if not data_iso:
+        return ""
+    data_iso = data_iso[:10]   # pegar só AAAA-MM-DD
+    partes = data_iso.split("-")
+    if len(partes) == 3:
+        return partes[2] + partes[1] + partes[0]
+    return ""
+
+
+def _fmt_valor(v: str) -> str:
+    """Normaliza valor numérico para string SPED (vírgula decimal)."""
+    if not v:
+        return ""
+    try:
+        d = Decimal(v.replace(",", "."))
+        return str(d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)).replace(".", ",")
+    except Exception:
+        return v
+
+
+def _detectar_namespace(root) -> str:
+    """Extrai namespace do elemento raiz, se houver."""
+    tag = root.tag
+    if tag.startswith("{"):
+        return tag[1:tag.index("}")]
+    return ""
+
+
+def parsear_xml_cte(conteudo_bytes: bytes, cod_part: str = "") -> DadosCTe:
+    """
+    Parser de XML CT-e (modelo 57) e CT-e OS (modelo 67).
+    Extrai todos os campos necessários para D100, D101 e D105.
+    """
+    dados = DadosCTe()
+    try:
+        root = ET.fromstring(conteudo_bytes)
+    except ET.ParseError as e:
+        dados.erros.append(f"XML inválido: {e}")
+        return dados
+
+    ns = _detectar_namespace(root)
+
+    # Encontrar nó infCte (pode estar direto ou dentro de cteProc)
+    def find_any(elem, tag):
+        r = elem.find(_ns(tag, ns))
+        if r is None and ns:
+            r = elem.find(tag)   # tenta sem namespace
+        return r
+
+    inf_cte = find_any(root, "infCte")
+    if inf_cte is None:
+        # Tenta dentro de CTe > infCte
+        cte_node = find_any(root, "CTe")
+        if cte_node is not None:
+            inf_cte = find_any(cte_node, "infCte")
+    if inf_cte is None:
+        dados.erros.append("Elemento infCte não encontrado no XML.")
+        return dados
+
+    # ── Identificação ────────────────────────────────────────────────────────
+    ide = find_any(inf_cte, "ide")
+    if ide is not None:
+        dados.num_doc    = _txt(ide, "nCT",    ns=ns)
+        dados.serie      = _txt(ide, "serie",  ns=ns)
+        dados.modelo     = _txt(ide, "mod",    ns=ns)   # 57 ou 67
+        dados.tipo_cte   = _txt(ide, "tpCTe", ns=ns)
+        dados.cod_sit    = "00"
+        dt_emi           = _txt(ide, "dhEmi", ns=ns) or _txt(ide, "dEmi", ns=ns)
+        dados.dt_emissao = _fmt_data_sped(dt_emi)
+        # cUF para detectar UF de emissão (informativo)
+
+    # Chave de acesso no atributo Id ou em infCte/@Id
+    chave_raw = inf_cte.get("Id", "")
+    if chave_raw.startswith("CTe"):
+        dados.chave = chave_raw[3:]   # remove prefixo "CTe"
+    else:
+        dados.chave = chave_raw
+
+    # ── Emitente ─────────────────────────────────────────────────────────────
+    emit = find_any(inf_cte, "emit")
+    if emit is not None:
+        dados.cnpj_emit  = _txt(emit, "CNPJ", ns=ns)
+        dados.ie_emit    = _txt(emit, "IE",   ns=ns)
+        dados.nome_emit  = _txt(emit, "xNome",ns=ns)
+
+    # ── Valores ──────────────────────────────────────────────────────────────
+    v_prest = find_any(inf_cte, "vPrest")
+    if v_prest is not None:
+        dados.vl_doc  = _fmt_valor(_txt(v_prest, "vTPrest", ns=ns))
+        dados.vl_serv = _fmt_valor(_txt(v_prest, "vRec",    ns=ns))
+
+    # ── ICMS ─────────────────────────────────────────────────────────────────
+    imp = find_any(inf_cte, "imp")
+    if imp is not None:
+        icms_node = find_any(imp, "ICMS")
+        if icms_node is not None:
+            # ICMS pode ter filhos: ICMS00, ICMS20, ICMS45, ICMS60, ICMS90, ICMSOutUF, ICMSSn
+            for cst_tag in ["ICMS00","ICMS20","ICMS45","ICMS60","ICMS90","ICMSOutUF","ICMSSn"]:
+                filho = find_any(icms_node, cst_tag)
+                if filho is not None:
+                    dados.cst_icms   = _txt(filho, "CST",     ns=ns)
+                    dados.vl_bc_icms = _fmt_valor(_txt(filho, "vBC",  ns=ns))
+                    dados.aliq_icms  = _fmt_valor(_txt(filho, "pICMS",ns=ns))
+                    dados.vl_icms    = _fmt_valor(_txt(filho, "vICMS",ns=ns))
+                    break
+
+        # PIS dentro de imp
+        pis_node = find_any(imp, "PIS")
+        if pis_node is not None:
+            for pis_tag in ["PISAliq","PISQtde","PISNT","PISOutr"]:
+                filho = find_any(pis_node, pis_tag)
+                if filho is not None:
+                    dados.cst_pis    = _txt(filho, "CST",    ns=ns)
+                    dados.vl_bc_pis  = _fmt_valor(_txt(filho, "vBC",  ns=ns))
+                    dados.aliq_pis   = _fmt_valor(_txt(filho, "pPIS", ns=ns))
+                    dados.vl_pis     = _fmt_valor(_txt(filho, "vPIS", ns=ns))
+                    break
+
+        # COFINS dentro de imp
+        cof_node = find_any(imp, "COFINS")
+        if cof_node is not None:
+            for cof_tag in ["COFINSAliq","COFINSQtde","COFINSNT","COFINSOutr"]:
+                filho = find_any(cof_node, cof_tag)
+                if filho is not None:
+                    dados.cst_cofins    = _txt(filho, "CST",      ns=ns)
+                    dados.vl_bc_cofins  = _fmt_valor(_txt(filho, "vBC",    ns=ns))
+                    dados.aliq_cofins   = _fmt_valor(_txt(filho, "pCOFINS",ns=ns))
+                    dados.vl_cofins     = _fmt_valor(_txt(filho, "vCOFINS",ns=ns))
+                    break
+
+    # ── Indicador de operação: verifica tomador (toma) ───────────────────────
+    # toma3/toma4 indica quem é o tomador (0=Rem 1=Exp 2=Rec 3=Dest 4=Outros)
+    # Se o CNPJ do tomador bate com o CNPJ do arquivo SPED → entrada
+    toma = find_any(inf_cte, "toma3") or find_any(inf_cte, "toma4")
+    if toma is not None:
+        tp_toma = _txt(toma, "toma", ns=ns)
+        # 0=Remetente,1=Expedidor,2=Recebedor,3=Destinatário
+        # Se somos o tomador (não emitente) → entrada; caso contrário → saída
+        dados.ind_oper = "0"    # padrão: entrada (tomador do serviço)
+        dados.ind_emit = "2"    # terceiros
+
+    return dados
+
+
+def cte_para_linhas_d(
+    dados: DadosCTe,
+    cod_part: str,
+    numero_linha_inicio: int,
+    aliq_pis_padrao:    str = "1,65",
+    aliq_cofins_padrao: str = "7,60",
+    cst_pis_padrao:     str = "50",
+    cst_cofins_padrao:  str = "50",
+    ind_nat_frt:        str = "0",
+) -> list[LinhaRegistro]:
+    """
+    Converte DadosCTe em LinhaRegistro para D100, D101 e D105.
+    Usa valores extraídos do XML; preenche PIS/COFINS com padrões se ausentes.
+    Retorna lista de LinhaRegistro pronta para inserção no DataFrame/arquivo SPED.
+    """
+    linhas: list[LinhaRegistro] = []
+    nl = numero_linha_inicio
+
+    # Resolve PIS/COFINS: XML > padrão da tela
+    cst_p  = dados.cst_pis    or cst_pis_padrao
+    bc_p   = dados.vl_bc_pis  or dados.vl_serv or dados.vl_doc
+    aliq_p = dados.aliq_pis   or aliq_pis_padrao
+    vl_p   = dados.vl_pis
+    if not vl_p and bc_p and aliq_p:
+        try:
+            vl_p = _fmt_valor(str(
+                Decimal(bc_p.replace(",",".")) *
+                Decimal(aliq_p.replace(",",".")) / Decimal("100")
+            ))
+        except Exception:
+            vl_p = ""
+
+    cst_c  = dados.cst_cofins    or cst_cofins_padrao
+    bc_c   = dados.vl_bc_cofins  or dados.vl_serv or dados.vl_doc
+    aliq_c = dados.aliq_cofins   or aliq_cofins_padrao
+    vl_c   = dados.vl_cofins
+    if not vl_c and bc_c and aliq_c:
+        try:
+            vl_c = _fmt_valor(str(
+                Decimal(bc_c.replace(",",".")) *
+                Decimal(aliq_c.replace(",",".")) / Decimal("100")
+            ))
+        except Exception:
+            vl_c = ""
+
+    # ── D100 ──────────────────────────────────────────────────────────────────
+    # Layout: |D100|IND_OPER|IND_EMIT|COD_PART|COD_MOD|COD_SIT|SER|SUB|NUM_DOC|
+    #         CHV_CTE|DT_DOC|DT_A_P|TP_CT_E|CHV_CTE_REF|VL_DOC|VL_DESC|IND_FRT|
+    #         VL_SERV|VL_BC_ICMS|ALIQ_ICMS|VL_ICMS|VL_NT|COD_INF|COD_CTA|
+    #         CST_PIS|VL_BC_PIS|ALIQ_PIS|VL_PIS|
+    #         CST_COFINS|VL_BC_COFINS|ALIQ_COFINS|VL_COFINS|
+    campos_d100 = [
+        "D100",
+        dados.ind_oper,          # 1: IND_OPER
+        dados.ind_emit,          # 2: IND_EMIT
+        cod_part,                # 3: COD_PART
+        dados.modelo,            # 4: COD_MOD (57 ou 67)
+        dados.cod_sit,           # 5: COD_SIT
+        dados.serie,             # 6: SER
+        "",                      # 7: SUB
+        dados.num_doc,           # 8: NUM_DOC
+        dados.chave,             # 9: CHV_CTE
+        dados.dt_emissao,        # 10: DT_DOC
+        dados.dt_acesso or dados.dt_emissao,  # 11: DT_A_P
+        dados.tipo_cte,          # 12: TP_CT_E
+        "",                      # 13: CHV_CTE_REF
+        dados.vl_doc,            # 14: VL_DOC
+        dados.vl_desc or "",     # 15: VL_DESC
+        ind_nat_frt,             # 16: IND_FRT (0=CIF 1=FOB 2=Terceiros 3=Próprio Rem 4=Próprio Dest 9=Sem)
+        dados.vl_serv,           # 17: VL_SERV
+        dados.vl_bc_icms,        # 18: VL_BC_ICMS
+        dados.aliq_icms,         # 19: ALIQ_ICMS
+        dados.vl_icms,           # 20: VL_ICMS
+        "",                      # 21: VL_NT
+        "",                      # 22: COD_INF
+        "",                      # 23: COD_CTA
+        cst_p,                   # 24: CST_PIS
+        bc_p,                    # 25: VL_BC_PIS
+        aliq_p,                  # 26: ALIQ_PIS
+        vl_p,                    # 27: VL_PIS
+        cst_c,                   # 28: CST_COFINS
+        bc_c,                    # 29: VL_BC_COFINS
+        aliq_c,                  # 30: ALIQ_COFINS
+        vl_c,                    # 31: VL_COFINS
+    ]
+    linha_raw = "|" + "|".join(campos_d100) + "|"
+    linhas.append(LinhaRegistro(nl, "D", "D100", campos_d100, linha_raw))
+    nl += 1
+
+    # ── D101 — PIS sobre frete ────────────────────────────────────────────────
+    # |D101|IND_NAT_FRT|VL_ITEM|CST_PIS|NAT_BC_CRED|VL_BC_PIS|ALIQ_PIS|VL_PIS|COD_CTA|
+    vl_item_frt = dados.vl_serv or dados.vl_doc
+    campos_d101 = [
+        "D101",
+        ind_nat_frt,    # 1: IND_NAT_FRT
+        vl_item_frt,    # 2: VL_ITEM
+        cst_p,          # 3: CST_PIS
+        "05",           # 4: NAT_BC_CRED (05=Frete)
+        bc_p,           # 5: VL_BC_PIS
+        aliq_p,         # 6: ALIQ_PIS
+        vl_p,           # 7: VL_PIS
+        "",             # 8: COD_CTA
+    ]
+    linha_raw = "|" + "|".join(campos_d101) + "|"
+    linhas.append(LinhaRegistro(nl, "D", "D101", campos_d101, linha_raw))
+    nl += 1
+
+    # ── D105 — COFINS sobre frete ─────────────────────────────────────────────
+    # |D105|IND_NAT_FRT|VL_ITEM|CST_COFINS|NAT_BC_CRED|VL_BC_COFINS|ALIQ_COFINS|VL_COFINS|COD_CTA|
+    campos_d105 = [
+        "D105",
+        ind_nat_frt,    # 1: IND_NAT_FRT
+        vl_item_frt,    # 2: VL_ITEM
+        cst_c,          # 3: CST_COFINS
+        "05",           # 4: NAT_BC_CRED (05=Frete)
+        bc_c,           # 5: VL_BC_COFINS
+        aliq_c,         # 6: ALIQ_COFINS
+        vl_c,           # 7: VL_COFINS
+        "",             # 8: COD_CTA
+    ]
+    linha_raw = "|" + "|".join(campos_d105) + "|"
+    linhas.append(LinhaRegistro(nl, "D", "D105", campos_d105, linha_raw))
+
+    return linhas
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Tela: Importador CT-e
+# ─────────────────────────────────────────────────────────────────────────────
+
+def pg_importar_cte():
+    st.markdown('<div class="sec">Importar XML CT-e → Bloco D (D100 · D101 · D105)</div>', unsafe_allow_html=True)
+
+    ed = st.session_state.get("editor")
+    res = st.session_state.get("resultado")
+
+    if not ed or not res:
+        st.warning("⚠️ Carregue um arquivo SPED primeiro na tela **Upload**.")
+        return
+
+    if res.tipo_arquivo != "EFD_CONTRIBUICOES":
+        st.info("ℹ️ Esta função é projetada para **EFD Contribuições**. "
+                "Arquivo atual identificado como EFD ICMS/IPI — os registros D100/D101/D105 "
+                "serão inseridos mesmo assim, mas verifique a compatibilidade com o layout.")
+
+    st.markdown("""
+    **Fluxo:**
+    1. Faça upload dos XMLs de CT-e (um ou vários)
+    2. Confira os dados extraídos na prévia
+    3. Configure parâmetros de PIS/COFINS se necessário
+    4. Clique em **Inserir no SPED** para adicionar os registros D100/D101/D105
+    """)
+
+    # ── Upload de XMLs ────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**1. Upload dos XMLs de CT-e**")
+    xmls = st.file_uploader(
+        "Selecione um ou mais arquivos XML de CT-e",
+        type=["xml"],
+        accept_multiple_files=True,
+        key="cte_upload",
+    )
+
+    if not xmls:
+        st.info("Nenhum XML selecionado.")
+        return
+
+    # ── Parâmetros PIS/COFINS ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**2. Parâmetros de PIS/COFINS (aplicados quando ausentes no XML)**")
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1: cst_pis_pad    = st.text_input("CST PIS:",    value="50", key="cte_cst_pis")
+    with c2: aliq_pis_pad   = st.text_input("Alíq. PIS (%):", value="1,65", key="cte_aliq_pis")
+    with c3: cst_cof_pad    = st.text_input("CST COFINS:", value="50", key="cte_cst_cof")
+    with c4: aliq_cof_pad   = st.text_input("Alíq. COFINS (%):", value="7,60", key="cte_aliq_cof")
+    with c5:
+        ind_nat_frt = st.selectbox(
+            "Nat. Frete (D101/D105):",
+            options=["0","1","2","3","4","9"],
+            format_func=lambda x: {
+                "0":"0-Própria do tomador","1":"1-Redespacho",
+                "2":"2-Redespacho Intermediário","3":"3-Serv. Vinculado",
+                "4":"4-Própria do emitente","9":"9-Sem frete"
+            }.get(x,x),
+    
