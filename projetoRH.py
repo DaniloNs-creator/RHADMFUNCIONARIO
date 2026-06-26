@@ -1,9 +1,15 @@
 """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║          SPED AUDITOR — FISCAL INTELLIGENCE PLATFORM  v2.0                  ║
+║          SPED AUDITOR — FISCAL INTELLIGENCE PLATFORM  v2.1                  ║
 ║          EFD ICMS/IPI  +  EFD CONTRIBUIÇÕES (PIS/COFINS)                    ║
 ║          Arquivo único · Python + Streamlit                                  ║
+║          Compatível com Streamlit 1.58+ / Python 3.14+                      ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
+
+Correções v2.1 (baseadas nos logs do Streamlit Cloud):
+  - st.radio("", ...) -> st.radio("Navegação", ...) — label vazio proibido em 3.14+
+  - use_container_width=True  -> width='stretch'  — deprecado após 2025-12-31
+  - use_container_width=False -> width='content'  — deprecado após 2025-12-31
 
 Execução:
     pip install streamlit pandas numpy openpyxl plotly
@@ -40,7 +46,7 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={"About": "SPED Auditor v2.0 | EFD ICMS/IPI + EFD Contribuições"},
+    menu_items={"About": "SPED Auditor v2.1 | EFD ICMS/IPI + EFD Contribuições"},
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -138,7 +144,6 @@ class EntradaAuditoria:
 # ████████████  MAPA DE CAMPOS  ███████████████████████████████████████████████
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── Campos comuns a ICMS e Contribuições ──────────────────────────────────────
 MAPA_CAMPOS: dict[str, dict[str, int]] = {
 
     # ── Bloco 0 — Abertura (comum) ────────────────────────────────────────────
@@ -173,7 +178,9 @@ MAPA_CAMPOS: dict[str, dict[str, int]] = {
     # ── EFD ICMS/IPI — Bloco D (transportes) ─────────────────────────────────
     "D100": {"IND_OPER":1,"COD_PART":3,"COD_MOD":4,"COD_SIT":5,
              "NUM_DOC":8,"DT_DOC":10,"VL_DOC":14,
-             "VL_BC_ICMS":18,"ALIQ_ICMS":19,"VL_ICMS":20},
+             "VL_BC_ICMS":18,"ALIQ_ICMS":19,"VL_ICMS":20,
+             "CST_PIS":21,"VL_BC_PIS":22,"ALIQ_PIS":23,"VL_PIS":24,
+             "CST_COFINS":25,"VL_BC_COFINS":26,"ALIQ_COFINS":27,"VL_COFINS":28},
     "D190": {"CST_ICMS":1,"CFOP":2,"ALIQ_ICMS":3,
              "VL_OPR":4,"VL_BC_ICMS":5,"VL_ICMS":6},
 
@@ -195,27 +202,14 @@ MAPA_CAMPOS: dict[str, dict[str, int]] = {
              "CST_COFINS":12,"VL_BC_COFINS":13,"ALIQ_COFINS":14,"VL_COFINS":15,
              "COD_CTA":16},
 
-    # ── EFD Contribuições — Bloco C (NF-e própria) ───────────────────────────
+    # ── EFD Contribuições — Bloco C ───────────────────────────────────────────
     "C010": {"IND_ESCRI":1},
-    "C100": {"IND_OPER":1,"IND_EMIT":2,"COD_PART":3,"COD_MOD":4,
-             "COD_SIT":5,"SER":6,"NUM_DOC":7,"CHV_NFE":8,
-             "DT_DOC":9,"DT_E_S":10,"VL_DOC":11,
-             "VL_DESC":13,"VL_MERC":15,
-             "VL_BC_ICMS":20,"VL_ICMS":21,
-             "VL_IPI":24,"VL_PIS":25,"VL_COFINS":26},
-    "C170": {"NUM_ITEM":1,"COD_ITEM":2,"DESCR_COMPL":3,
-             "QTD":4,"UNID":5,"VL_ITEM":6,"VL_DESC":7,"IND_MOV":8,
-             "CST_ICMS":9,"CFOP":10,
-             "VL_BC_ICMS":12,"ALIQ_ICMS":13,"VL_ICMS":14,
-             "CST_IPI":19,"VL_BC_IPI":20,"ALIQ_IPI":21,"VL_IPI":22,
-             "CST_PIS":23,"VL_BC_PIS":24,"ALIQ_PIS":25,"VL_PIS":26,
-             "CST_COFINS":27,"VL_BC_COFINS":28,"ALIQ_COFINS":29,"VL_COFINS":30},
     "C180": {"COD_CRED":1,"IND_ORIG_CRED":2,"VL_BC_PIS":3,"ALIQ_PIS":4,
              "QUANT_BC_PIS":5,"VL_PIS":6,"VL_BC_COFINS":7,"ALIQ_COFINS":8,
              "QUANT_BC_COFINS":9,"VL_COFINS":10,"COD_CTA":11},
     "C181": {"COD_CRED":1,"IND_ORIG_CRED":2,"CNPJ_CPF_PART":3,
              "COD_MOD":4,"DT_OPER":5,"CHV_NFE":6,"NUM_DOC":7,
-             "VL_OPER":8,"CFOP":9,"NAT_BC_CRED":10,"IND_ORIG_CRED":11,
+             "VL_OPER":8,"CFOP":9,"NAT_BC_CRED":10,
              "VL_BC_PIS":12,"ALIQ_PIS":13,"VL_PIS":14,
              "VL_BC_COFINS":15,"ALIQ_COFINS":16,"VL_COFINS":17},
     "C185": {"NUM_ITEM":1,"COD_ITEM":2,"CST_PIS":3,"COD_CRED":4,
@@ -223,20 +217,12 @@ MAPA_CAMPOS: dict[str, dict[str, int]] = {
              "CST_COFINS":8,"VL_BC_COFINS":9,"ALIQ_COFINS":10,"VL_COFINS":11},
     "C380": {"COD_MOD":1,"DT_DOC_INI":2,"DT_DOC_FIN":3,"NUM_DOC_INI":4,
              "NUM_DOC_FIN":5,"VL_DOC":6,"VL_DOC_CANC":7},
-    "C395": {"COD_MOD":1,"COD_PART":2,"DT_DOC":3,"QTD_ORD":4,"VL_DOC":5},
-    "C400": {"COD_MOD":1,"ECF_MOD":2,"ECF_FAB":3,"ECF_CX":4},
-    "C405": {"DT_DOC":1,"CRO":2,"CRZ":3,"NUM_COO_INI":4,"NUM_COO_FIN":5,"VL_CRO":6,"VL_CMV":7},
     "C481": {"CST_PIS":1,"VL_ITEM":2,"VL_BC_PIS":3,"ALIQ_PIS":4,
              "QUANT_BC_PIS":5,"VL_PIS":6,"COD_CTA":7},
     "C485": {"CST_COFINS":1,"VL_ITEM":2,"VL_BC_COFINS":3,"ALIQ_COFINS":4,
              "QUANT_BC_COFINS":5,"VL_COFINS":6,"COD_CTA":7},
 
     # ── EFD Contribuições — Bloco D ───────────────────────────────────────────
-    "D100": {"IND_OPER":1,"COD_PART":3,"COD_MOD":4,"COD_SIT":5,
-             "NUM_DOC":8,"DT_DOC":10,"VL_DOC":14,
-             "VL_BC_ICMS":18,"ALIQ_ICMS":19,"VL_ICMS":20,
-             "CST_PIS":21,"VL_BC_PIS":22,"ALIQ_PIS":23,"VL_PIS":24,
-             "CST_COFINS":25,"VL_BC_COFINS":26,"ALIQ_COFINS":27,"VL_COFINS":28},
     "D101": {"IND_NAT_FRT":1,"VL_ITEM":2,"CST_PIS":3,"NAT_BC_CRED":4,
              "VL_BC_PIS":5,"ALIQ_PIS":6,"VL_PIS":7,"COD_CTA":8},
     "D105": {"IND_NAT_FRT":1,"VL_ITEM":2,"CST_COFINS":3,"NAT_BC_CRED":4,
@@ -262,8 +248,7 @@ MAPA_CAMPOS: dict[str, dict[str, int]] = {
     "M100": {"COD_CRED":1,"IND_CRED_ORI":2,"VL_BC_PIS":3,"ALIQ_PIS":4,
              "QUANT_BC_PIS":5,"VL_CRED":6,"VL_AJUS_ACRES":7,"VL_AJUS_REDUC":8,
              "VL_CRED_DIF":9,"VL_CRED_DISP":10,"IND_DESC_CRED":11,"VL_CRED_DESC":12},
-    "M110": {"IND_AJ":1,"VL_AJ":2,"COD_AJ":3,"NUM_DOC":4,
-             "DESCR_AJ":5,"DT_REF":6},
+    "M110": {"IND_AJ":1,"VL_AJ":2,"COD_AJ":3,"NUM_DOC":4,"DESCR_AJ":5,"DT_REF":6},
     "M200": {"VL_TOT_CONT_NC_PER":1,"VL_TOT_CRED_DESC":2,"VL_TOT_CRED_DESC_ANT":3,
              "VL_TOT_CONT_NC_DEV":4,"VL_RET_NC":5,"VL_OUT_DED_NC":6,
              "VL_CONT_NC_REC":7,"VL_TOT_CONT_CUM_PER":8,"VL_RET_CUM":9,
@@ -297,17 +282,12 @@ MAPA_CAMPOS: dict[str, dict[str, int]] = {
 
 # Campos numéricos — todos os tributos
 CAMPOS_NUMERICOS = {
-    # ICMS
     "VL_ITEM","VL_BC_ICMS","ALIQ_ICMS","VL_ICMS",
     "VL_BC_ICMS_ST","ALIQ_ST","VL_ICMS_ST",
     "VL_IPI","VL_BC_IPI","ALIQ_IPI",
-    # PIS
     "VL_BC_PIS","ALIQ_PIS","VL_PIS","QUANT_BC_PIS",
-    # COFINS
     "VL_BC_COFINS","ALIQ_COFINS","VL_COFINS","QUANT_BC_COFINS",
-    # Documentos
     "VL_DOC","VL_MERC","VL_DESC","VL_OPER","QTD",
-    # Apuração
     "VL_CRED","VL_CONT_APUR","VL_CONT_PER","VL_REC_BRT","VL_BC_CONT",
     "VL_ICMS_RECOLHER","VL_TOT_DEBITOS","VL_TOT_CREDITOS",
 }
@@ -316,7 +296,6 @@ CAMPOS_NUMERICOS = {
 # ████████████  REGRAS FISCAIS PADRÃO  ████████████████████████████████████████
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# ── ICMS ──────────────────────────────────────────────────────────────────────
 _REGRAS_ICMS = [
     ("ICMS","000","*","Tributado Integralmente",True,True,True,"VL_ITEM",12.0,"critica"),
     ("ICMS","010","*","Tributado + ST",         True,True,True,"VL_ITEM",12.0,"critica"),
@@ -331,7 +310,6 @@ _REGRAS_ICMS = [
     ("ICMS","090","*","Outras Situações",       False,False,False,"VL_ITEM",None,"aviso"),
 ]
 
-# ── PIS (CST regime não cumulativo) ───────────────────────────────────────────
 _REGRAS_PIS = [
     ("PIS","01","*","PIS Não Cumulativo Alíq. Básica",True,True,True,"VL_ITEM",1.65,"critica"),
     ("PIS","02","*","PIS Não Cumulativo Alíq. Difenc.",True,True,True,"VL_ITEM",None,"critica"),
@@ -354,7 +332,6 @@ _REGRAS_PIS = [
     ("PIS","99","*","PIS Outras Saídas",         False,False,False,"VL_ITEM",None,"info"),
 ]
 
-# ── COFINS (idênticos em CST ao PIS) ──────────────────────────────────────────
 _REGRAS_COFINS = [
     ("COFINS","01","*","COFINS Não Cumulativo Alíq. Básica",True,True,True,"VL_ITEM",7.6,"critica"),
     ("COFINS","02","*","COFINS Não Cumulativo Alíq. Difenc.",True,True,True,"VL_ITEM",None,"critica"),
@@ -545,7 +522,7 @@ def _fmt_brl(v: Optional[float]) -> str:
     try:
         d = Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         i,dec = str(d).split(".")
-        fmt="";
+        fmt=""
         for j,c in enumerate(reversed(i)):
             if j and j%3==0 and c!="-": fmt="."+fmt
             fmt=c+fmt
@@ -568,7 +545,6 @@ def parse_sped(conteudo: bytes) -> ResultadoParser:
         reg = campos[0].strip().upper()
         linhas.append(LinhaRegistro(i, reg[0] if reg else "?", reg, campos, raw))
 
-    # Metadados
     meta = MetadadosArquivo()
     for l in linhas:
         if l.registro == "0000":
@@ -581,9 +557,7 @@ def parse_sped(conteudo: bytes) -> ResultadoParser:
     meta.total_linhas = len(linhas)
     meta.blocos_presentes = sorted(set(l.bloco for l in linhas))
 
-    # Detecção do tipo: EFD Contrib tem blocos A, M, P, F e versão 006+
     blocos = set(meta.blocos_presentes)
-    # Verifica também pela versão no 0000
     cod_ver = ""
     for l in linhas:
         if l.registro == "0000": cod_ver = l.get(1); break
@@ -592,9 +566,8 @@ def parse_sped(conteudo: bytes) -> ResultadoParser:
     elif blocos & {"E","G","K","H"}:
         tipo = "EFD_ICMS_IPI"
     else:
-        tipo = "EFD_ICMS_IPI"  # padrão
+        tipo = "EFD_ICMS_IPI"
 
-    # DataFrame
     rows = []
     for l in linhas:
         r = {"numero_linha":l.numero_linha,"bloco":l.bloco,"registro":l.registro,"linha_original":l.linha_original}
@@ -637,7 +610,6 @@ def sync_df_linhas(df: pd.DataFrame, linhas: list[LinhaRegistro]) -> list[LinhaR
 def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> pd.DataFrame:
     inc: list[dict] = []
 
-    # ── Helpers ────────────────────────────────────────────────────────────────
     def add(nl,reg,bloco,tipo,sev,campo,desc,va,vs,cst="",cfop="",regra_id="",num_doc=""):
         inc.append({"numero_linha":nl,"bloco":bloco,"registro":reg,
                     "tipo":tipo,"severidade":sev,"campo_afetado":campo,
@@ -685,50 +657,36 @@ def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> p
                     f"[{tributo}] Calculado {_fmt_brl(esp)} ≠ Registrado {_fmt_brl(vl)}",
                     _to_sped_str(vl),_to_sped_str(esp),cst,cfop,rid)
 
-    # ── A) Validação ICMS — C170 ───────────────────────────────────────────────
     df_c170 = df[df["registro"]=="C170"].copy()
     for _, row in df_c170.iterrows():
         nl = int(row.get("numero_linha",0))
         val_tributo(row,nl,"C170","C","ICMS","CST_ICMS","VL_BC_ICMS","ALIQ_ICMS","VL_ICMS")
-
-    # ── B) Validação PIS — C170 ────────────────────────────────────────────────
-    for _, row in df_c170.iterrows():
-        nl = int(row.get("numero_linha",0))
         val_tributo(row,nl,"C170","C","PIS","CST_PIS","VL_BC_PIS","ALIQ_PIS","VL_PIS")
-
-    # ── C) Validação COFINS — C170 ─────────────────────────────────────────────
-    for _, row in df_c170.iterrows():
-        nl = int(row.get("numero_linha",0))
         val_tributo(row,nl,"C170","C","COFINS","CST_COFINS","VL_BC_COFINS","ALIQ_COFINS","VL_COFINS")
 
-    # ── D) Validação PIS — A170 (EFD Contribuições — serviços) ────────────────
     df_a170 = df[df["registro"]=="A170"].copy()
     for _, row in df_a170.iterrows():
         nl = int(row.get("numero_linha",0))
         val_tributo(row,nl,"A170","A","PIS","CST_PIS","VL_BC_PIS","ALIQ_PIS","VL_PIS","VL_ITEM")
         val_tributo(row,nl,"A170","A","COFINS","CST_COFINS","VL_BC_COFINS","ALIQ_COFINS","VL_COFINS","VL_ITEM")
 
-    # ── E) Validação PIS — C185 ────────────────────────────────────────────────
     df_c185 = df[df["registro"]=="C185"].copy()
     for _, row in df_c185.iterrows():
         nl = int(row.get("numero_linha",0))
         val_tributo(row,nl,"C185","C","PIS","CST_PIS","VL_BC_PIS","ALIQ_PIS","VL_PIS")
         val_tributo(row,nl,"C185","C","COFINS","CST_COFINS","VL_BC_COFINS","ALIQ_COFINS","VL_COFINS")
 
-    # ── F) Validação PIS/COFINS — D100 ────────────────────────────────────────
     df_d100 = df[df["registro"]=="D100"].copy()
     for _, row in df_d100.iterrows():
         nl = int(row.get("numero_linha",0))
         val_tributo(row,nl,"D100","D","PIS","CST_PIS","VL_BC_PIS","ALIQ_PIS","VL_PIS","VL_DOC")
         val_tributo(row,nl,"D100","D","COFINS","CST_COFINS","VL_BC_COFINS","ALIQ_COFINS","VL_COFINS","VL_DOC")
 
-    # ── G) Validação PIS/COFINS — F100 ────────────────────────────────────────
     df_f100 = df[df["registro"]=="F100"].copy()
     for _, row in df_f100.iterrows():
         nl = int(row.get("numero_linha",0))
         bc_p = _to_float(row.get("VL_BC_PIS")); al_p = _to_float(row.get("ALIQ_PIS")); vl_p = _to_float(row.get("VL_PIS"))
         bc_c = _to_float(row.get("VL_BC_COFINS")); al_c = _to_float(row.get("ALIQ_COFINS")); vl_c = _to_float(row.get("VL_COFINS"))
-        vo = _to_float(row.get("VL_OPER"))
         if bc_p and al_p and vl_p is not None:
             esp = calcular_tributo(RegraFiscal("","PIS","01","*","*","",True,True,True,"",1.65,"base * aliq / 100",False,False,"critica"),bc_p,al_p)
             if abs(esp-vl_p)>0.05:
@@ -738,7 +696,6 @@ def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> p
             if abs(esp-vl_c)>0.05:
                 add(nl,"F100","F","DIVERGENCIA_COFINS","AVISO","VL_COFINS",f"[COFINS] F100 calculado {_fmt_brl(esp)} ≠ {_fmt_brl(vl_c)}",_to_sped_str(vl_c),_to_sped_str(esp))
 
-    # ── H) Divergência totais C100 vs soma C170 (ICMS) ────────────────────────
     df_docs = df[df["registro"].isin(["C100","C170"])].sort_values("numero_linha")
     c100a=None; c100nl=0; aicms=0.0
     for _, row in df_docs.iterrows():
@@ -753,7 +710,6 @@ def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> p
         elif row["registro"]=="C170" and c100a is not None:
             aicms += _to_float(row.get("VL_ICMS")) or 0.0
 
-    # ── I) C190 sem base para CST tributado ───────────────────────────────────
     for _, row in df[df["registro"]=="C190"].iterrows():
         cst=str(row.get("CST_ICMS","") or "").strip()
         cfop=str(row.get("CFOP","") or "").strip()
@@ -765,7 +721,6 @@ def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> p
                 add(nl,"C190","C","C190_SEM_BASE","AVISO","VL_BC_ICMS",
                     f"C190 CST {cst}/CFOP {cfop} sem base ICMS","",str(row.get("VL_OPR","")),cst,cfop)
 
-    # ── J) Apuração M200/M600 — verificar totais ──────────────────────────────
     for reg_m, campo_rec in [("M200","VL_TOT_CONT_REC"),("M600","VL_TOT_CONT_REC")]:
         for _, row in df[df["registro"]==reg_m].iterrows():
             nl=int(row.get("numero_linha",0))
@@ -780,7 +735,6 @@ def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> p
                         f"[{trib}] {reg_m}: NC ({_fmt_brl(nc)}) + CUM ({_fmt_brl(cu)}) ≠ Total ({_fmt_brl(vr)})",
                         _to_sped_str(vr or 0),_to_sped_str(esp))
 
-    # ── K) Integridade de blocos ───────────────────────────────────────────────
     for bloco in df["bloco"].unique():
         if bloco=="?": continue
         for suf,te in [("001","BLOCO_SEM_ABERTURA"),("990","BLOCO_SEM_FECHAMENTO")]:
@@ -788,7 +742,6 @@ def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> p
             if df[df["registro"]==re_].empty:
                 add(0,re_,bloco,te,"CRITICA","registro",f"Bloco {bloco}: {re_} ausente","ausente","")
 
-    # ── L) 0000 obrigatórios ───────────────────────────────────────────────────
     df0=df[df["registro"]=="0000"]
     if df0.empty:
         add(0,"0000","0","CAMPO_AUSENTE","CRITICA","0000","Registro 0000 não encontrado","ausente","")
@@ -799,7 +752,6 @@ def validar(df: pd.DataFrame, regras: list[RegraFiscal], tipo_arquivo: str) -> p
                 add(int(row0.get("numero_linha",1)),"0000","0","CAMPO_AUSENTE","CRITICA",c,
                     f"Campo {c} obrigatório ausente no 0000","","")
 
-    # ── M) Valores negativos inesperados — C170 ────────────────────────────────
     for col in ["VL_ITEM","VL_BC_ICMS","VL_ICMS","ALIQ_ICMS","VL_BC_PIS","VL_PIS","VL_BC_COFINS","VL_COFINS"]:
         if col not in df_c170.columns: continue
         neg=df_c170[df_c170[col].apply(lambda x: x is not None and isinstance(x,float) and x<0)]
@@ -927,7 +879,8 @@ class EditorSped:
 # ████████████  EXPORTAÇÕES  ████████████████████████████████████████████████
 # ═══════════════════════════════════════════════════════════════════════════════
 
-_CH="FF1A3A5C"; _CC="FFC0392B"; _CA="FFB7860D"; _CO="FF1A7A35"; _CZ="FFEBF0F7"; _CW="FFFFFFFF"; _CS="FF2C5F8A"
+_CH="FF1A3A5C"; _CC="FFC0392B"; _CA="FFB7860D"; _CO="FF1A7A35"
+_CZ="FFEBF0F7"; _CW="FFFFFFFF"; _CS="FF2C5F8A"
 
 def _bd(): s=Side(style="thin",color="CCCCCC"); return Border(bottom=s,right=s)
 
@@ -1009,6 +962,7 @@ html,body,[class*="css"]{font-family:'Inter',sans-serif;}
 section[data-testid="stSidebar"]{background:#0F2540 !important;color:#fff;}
 section[data-testid="stSidebar"] .stRadio label{color:#BDD6F5 !important;font-size:.88rem;}
 section[data-testid="stSidebar"] .stRadio label:hover{color:#fff !important;}
+section[data-testid="stSidebar"] .stRadio [data-testid="stWidgetLabel"]{display:none;}
 .sec{font-size:1.05rem;font-weight:700;color:#0F2540;border-left:4px solid #1A6BAD;
      padding-left:10px;margin:16px 0 10px 0;}
 .stButton>button{border-radius:6px;font-weight:600;font-size:.87rem;}
@@ -1048,6 +1002,17 @@ def _metricas(df,tipo):
     r["sem_base_cof"]=sem("VL_BC_COFINS"); r["sem_cof"]=sem("VL_COFINS")
     return r
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Helper: width compatível com Streamlit ≥1.45 e <1.45
+# ─────────────────────────────────────────────────────────────────────────────
+def _w(stretch=True):
+    """Retorna kwargs de largura compatíveis com Streamlit 1.45+ (width=) e anterior (use_container_width=)."""
+    import streamlit as _st
+    ver = tuple(int(x) for x in _st.__version__.split(".")[:2])
+    if ver >= (1, 45):
+        return {"width": "stretch" if stretch else "content"}
+    return {"use_container_width": stretch}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # ████████████  INICIALIZAÇÃO  █████████████████████████████████████████████████
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1074,7 +1039,7 @@ def sidebar():
         st.markdown("""
         <div style="padding:10px 0 18px;text-align:center;">
           <span style="font-size:1.4rem;font-weight:800;color:#fff;">🔍 SPED Auditor</span><br>
-          <span style="font-size:.68rem;color:#7BAFD4;">EFD ICMS/IPI + Contribuições  v2.0</span>
+          <span style="font-size:.68rem;color:#7BAFD4;">EFD ICMS/IPI + Contribuições  v2.1</span>
         </div>""",unsafe_allow_html=True)
         res=st.session_state.get("resultado")
         if res:
@@ -1089,7 +1054,9 @@ def sidebar():
               <div style="font-size:.67rem;color:#BDD6F5;">Blocos: {', '.join(m.blocos_presentes)}</div>
             </div>""",unsafe_allow_html=True)
         st.markdown("**Navegação**")
-        pag=st.radio("",PAGINAS,label_visibility="collapsed")
+        # ── CORREÇÃO 1: label não pode ser vazio no Streamlit 1.58+ / Python 3.14+
+        # label_visibility="collapsed" oculta o label visualmente sem gerar warning
+        pag=st.radio("Navegação",PAGINAS,label_visibility="collapsed")
         ed=st.session_state.get("editor")
         if ed and ed.auditoria.total():
             st.markdown(f'<div style="color:#7BAFD4;font-size:.71rem;margin-top:8px;">✏️ {ed.auditoria.total()} alteração(ões)</div>',unsafe_allow_html=True)
@@ -1104,7 +1071,7 @@ def pg_upload():
         tipo_demo=st.radio("Demo:",["EFD ICMS/IPI","EFD Contribuições (PIS/COFINS)"],horizontal=True,key="td")
         usar_demo=st.checkbox("📁 Usar arquivo de demonstração",value=not bool(arq))
         usuario=st.text_input("Usuário da sessão:","analista")
-        if st.button("▶ Processar Arquivo",type="primary",use_container_width=True):
+        if st.button("▶ Processar Arquivo",type="primary",**_w()):
             _processar(arq,usar_demo,tipo_demo,usuario)
     with c2:
         st.markdown("**Tipos suportados:**")
@@ -1150,15 +1117,12 @@ def pg_dashboard():
     tipo_label="🟦 EFD ICMS/IPI" if res.tipo_arquivo=="EFD_ICMS_IPI" else "🟩 EFD Contribuições"
     c4.metric("Tipo",tipo_label)
     st.markdown("---")
-    # Cards linha 1 — geral
     cc=st.columns(8)
     _card(cc[0],"Total Linhas",f"{mt['total_linhas']:,}")
     _card(cc[1],"NF-e (C100)",f"{mt['total_c100']:,}")
     _card(cc[2],"Itens (C170)",f"{mt['total_c170']:,}")
-    n_a170=mt.get("total_a170",0)
-    _card(cc[3],"Serv (A170)",f"{n_a170:,}")
-    n_d100=mt.get("total_d100",0)
-    _card(cc[4],"Transp (D100)",f"{n_d100:,}")
+    _card(cc[3],"Serv (A170)",f"{mt.get('total_a170',0):,}")
+    _card(cc[4],"Transp (D100)",f"{mt.get('total_d100',0):,}")
     ni=len(df_inc) if not df_inc.empty else 0
     nc=int((df_inc["severidade"]=="CRITICA").sum()) if not df_inc.empty and "severidade" in df_inc.columns else 0
     _card(cc[5],"Inconsistências",f"{ni:,}","critico" if ni else "ok")
@@ -1166,7 +1130,6 @@ def pg_dashboard():
     alt=len(ed.get_alterados()) if ed else 0
     _card(cc[7],"Alterados",f"{alt:,}","aviso" if alt else "ok")
     st.markdown("<br>",unsafe_allow_html=True)
-    # Cards linha 2 — tributos
     ct=st.columns(6)
     _card(ct[0],"Sem Base ICMS",f"{mt['sem_base_icms']:,}","critico" if mt['sem_base_icms'] else "ok")
     _card(ct[1],"Sem VL ICMS",f"{mt['sem_icms']:,}","critico" if mt['sem_icms'] else "ok")
@@ -1180,7 +1143,9 @@ def pg_dashboard():
         st.markdown('<div class="sec">Registros por Bloco</div>',unsafe_allow_html=True)
         dfb=df["bloco"].value_counts().reset_index(); dfb.columns=["Bloco","Qtd"]
         fig=px.bar(dfb,x="Bloco",y="Qtd",color="Bloco",color_discrete_sequence=px.colors.qualitative.Set2,template="plotly_white")
-        fig.update_layout(showlegend=False,height=240,margin=dict(l=5,r=5,t=5,b=5)); st.plotly_chart(fig,use_container_width=True)
+        fig.update_layout(showlegend=False,height=240,margin=dict(l=5,r=5,t=5,b=5))
+        # ── CORREÇÃO 2: use_container_width -> width='stretch'
+        st.plotly_chart(fig,width="stretch")
     with g2:
         st.markdown('<div class="sec">Inconsistências por Tipo</div>',unsafe_allow_html=True)
         if not df_inc.empty and "tipo" in df_inc.columns:
@@ -1188,7 +1153,7 @@ def pg_dashboard():
             fig2=px.bar(dft,x="Qtd",y="Tipo",orientation="h",template="plotly_white",
                        color="Qtd",color_continuous_scale=["#FFF0F0","#C0392B"])
             fig2.update_layout(height=240,margin=dict(l=5,r=5,t=5,b=5),coloraxis_showscale=False)
-            st.plotly_chart(fig2,use_container_width=True)
+            st.plotly_chart(fig2,width="stretch")
     g3,g4=st.columns(2)
     with g3:
         st.markdown('<div class="sec">CST ICMS — C170</div>',unsafe_allow_html=True)
@@ -1197,13 +1162,15 @@ def pg_dashboard():
             dfc=df17["CST_ICMS"].value_counts().reset_index(); dfc.columns=["CST","Qtd"]
             fig3=px.pie(dfc,names="CST",values="Qtd",hole=0.4,template="plotly_white",
                        color_discrete_sequence=px.colors.qualitative.Pastel)
-            fig3.update_layout(height=240,margin=dict(l=5,r=5,t=5,b=5)); st.plotly_chart(fig3,use_container_width=True)
+            fig3.update_layout(height=240,margin=dict(l=5,r=5,t=5,b=5))
+            st.plotly_chart(fig3,width="stretch")
     with g4:
         st.markdown('<div class="sec">CST PIS — C170</div>',unsafe_allow_html=True)
         if not df17.empty and "CST_PIS" in df17.columns:
             dfp=df17["CST_PIS"].value_counts().reset_index(); dfp.columns=["CST","Qtd"]
             fig4=px.bar(dfp,x="CST",y="Qtd",template="plotly_white",color_discrete_sequence=["#2980B9"])
-            fig4.update_layout(height=240,margin=dict(l=5,r=5,t=5,b=5)); st.plotly_chart(fig4,use_container_width=True)
+            fig4.update_layout(height=240,margin=dict(l=5,r=5,t=5,b=5))
+            st.plotly_chart(fig4,width="stretch")
 
 # ── Blocos ─────────────────────────────────────────────────────────────────────
 def pg_blocos():
@@ -1221,7 +1188,7 @@ def pg_blocos():
     if r_sel: df_b=df_b[df_b["registro"].isin(r_sel)]
     busca=st.text_input("Buscar em qualquer campo:")
     if busca: mask=df_b.astype(str).apply(lambda c:c.str.contains(busca,case=False)).any(axis=1); df_b=df_b[mask]
-    st.dataframe(df_b[_cols_rel(df_b)].fillna("").head(500),use_container_width=True,height=420)
+    st.dataframe(df_b[_cols_rel(df_b)].fillna("").head(500),width="stretch",height=420)
     st.caption(f"{len(df_b):,} registros")
 
 # ── Registros ──────────────────────────────────────────────────────────────────
@@ -1235,7 +1202,7 @@ def pg_registros():
     with c2: busca=st.text_input("Buscar:",placeholder="CST, CFOP, valor…")
     df_r=df[df["registro"]==reg].copy()
     if busca: mask=df_r.astype(str).apply(lambda c:c.str.contains(busca,case=False)).any(axis=1); df_r=df_r[mask]
-    st.dataframe(df_r[_cols_rel(df_r)].fillna(""),use_container_width=True,height=440)
+    st.dataframe(df_r[_cols_rel(df_r)].fillna(""),width="stretch",height=440)
     st.caption(f"{len(df_r):,} registros do tipo {reg}")
 
 # ── Notas Fiscais ─────────────────────────────────────────────────────────────
@@ -1254,13 +1221,12 @@ def pg_notas():
             dfd=df[df["registro"]==reg].copy()
             if dfd.empty: st.info(f"Nenhum {reg} encontrado."); continue
             cols=[c for c in campos_vis if c in dfd.columns]
-            # Filtro parceiro
             c1,c2=st.columns(2)
             with c1:
                 ps=["Todos"]+sorted(dfd["COD_PART"].dropna().unique().tolist()) if "COD_PART" in dfd.columns else ["Todos"]
                 pf=st.selectbox("Parceiro:",ps,key=f"pf_{reg}")
             if pf!="Todos" and "COD_PART" in dfd.columns: dfd=dfd[dfd["COD_PART"]==pf]
-            st.dataframe(dfd[cols].fillna(""),use_container_width=True,height=380)
+            st.dataframe(dfd[cols].fillna(""),width="stretch",height=380)
             st.caption(f"{len(dfd):,} documentos")
             ns=[c for c in ["VL_DOC","VL_ICMS","VL_PIS","VL_COFINS"] if c in dfd.columns]
             if ns:
@@ -1305,7 +1271,7 @@ def pg_itens():
                 if ap and not df_inc.empty:
                     li=set(df_inc["numero_linha"].tolist()); dfd=dfd[dfd["numero_linha"].isin(li)]
             cols=[c for c in cv if c in dfd.columns]
-            st.dataframe(dfd[cols].fillna(""),use_container_width=True,height=400)
+            st.dataframe(dfd[cols].fillna(""),width="stretch",height=400)
             st.caption(f"{len(dfd):,} registros")
 
 # ── PIS/COFINS — apuração ─────────────────────────────────────────────────────
@@ -1324,9 +1290,8 @@ def pg_pis_cofins():
         with tab:
             dfd=df[df["registro"]==reg].copy()
             if dfd.empty: st.info(f"Nenhum registro {reg} encontrado."); continue
-            st.dataframe(dfd[_cols_rel(dfd)].fillna(""),use_container_width=True,height=350)
+            st.dataframe(dfd[_cols_rel(dfd)].fillna(""),width="stretch",height=350)
             st.caption(f"{len(dfd):,} registros {reg}")
-            # Totalizadores para apuração
             if reg in ("M200","M600"):
                 cols_tot=[c for c in ["VL_TOT_CONT_NC_PER","VL_TOT_CRED_DESC","VL_TOT_CONT_REC",
                                       "VL_CONT_NC_REC","VL_CONT_CUM_REC"] if c in dfd.columns]
@@ -1371,7 +1336,7 @@ def pg_inconsistencias():
         if row.get("severidade")=="AVISO":   return ["background-color:#FFFDE8"]*len(row)
         return [""]*len(row)
     cols_show=[c for c in df_f.columns if c!="linha_original"]
-    st.dataframe(df_f[cols_show].style.apply(cor_linha,axis=1),use_container_width=True,height=460)
+    st.dataframe(df_f[cols_show].style.apply(cor_linha,axis=1),width="stretch",height=460)
     st.caption(f"{len(df_f):,} inconsistências")
     if st.button("🔄 Revalidar Arquivo"):
         ed=st.session_state.get("editor"); regras=st.session_state.get("regras")
@@ -1386,15 +1351,12 @@ def pg_massa():
     usuario=st.session_state.get("_usuario","analista")
     if not ed: st.info("Carregue um arquivo."); return
 
-    # Seleção de tributo e registro alvo
     c1,c2=st.columns(2)
-    with c1:
-        tributo=st.selectbox("Tributo a corrigir:",["ICMS","PIS","COFINS"],key="m_trib")
+    with c1: tributo=st.selectbox("Tributo a corrigir:",["ICMS","PIS","COFINS"],key="m_trib")
     with c2:
         reg_opts=["C170","A170","C185","D100","F100"]
         reg_alvo=st.selectbox("Registro alvo:",reg_opts,key="m_reg")
 
-    # Mapeamento de campos por tributo
     mapa_campos_trib={
         "ICMS":{"cst":"CST_ICMS","bc":"VL_BC_ICMS","aliq":"ALIQ_ICMS","vl":"VL_ICMS"},
         "PIS": {"cst":"CST_PIS", "bc":"VL_BC_PIS", "aliq":"ALIQ_PIS", "vl":"VL_PIS"},
@@ -1405,7 +1367,6 @@ def pg_massa():
     df_reg=ed.df[ed.df["registro"]==reg_alvo].copy()
     if df_reg.empty: st.warning(f"Nenhum {reg_alvo} encontrado."); return
 
-    # Filtros
     st.markdown("**Filtros de seleção**")
     c1,c2,c3,c4=st.columns(4)
     with c1:
@@ -1429,7 +1390,7 @@ def pg_massa():
 
     st.info(f"**{len(df_alvo)} item(ns) selecionado(s) em {reg_alvo} — tributo {tributo}**")
     cols_vis=[c for c in ["numero_linha",fc["cst"],"CFOP","VL_ITEM",fc["bc"],fc["aliq"],fc["vl"]] if c in df_alvo.columns]
-    st.dataframe(df_alvo[cols_vis].fillna("").head(200),use_container_width=True,height=180)
+    st.dataframe(df_alvo[cols_vis].fillna("").head(200),width="stretch",height=180)
     if df_alvo.empty: return
 
     nls=df_alvo["numero_linha"].tolist()
@@ -1466,7 +1427,7 @@ def pg_massa():
 
     with tab4:
         pv=ed.preview(nls)
-        if not pv.empty: st.dataframe(pv,use_container_width=True)
+        if not pv.empty: st.dataframe(pv,width="stretch")
         else: st.info("Nenhuma alteração pendente.")
 
     st.markdown("---")
@@ -1518,7 +1479,7 @@ def pg_editor():
             ed.restaurar([nl]); st.success("✅ Restaurado."); st.rerun()
     st.markdown("---")
     diffs=[{"Campo":c,"Original":str(row_o.get(c,"")),"Atual":str(row_a.get(c,""))} for c in campos if str(row_a.get(c,""))!=str(row_o.get(c,""))]
-    if diffs: st.dataframe(pd.DataFrame(diffs),use_container_width=True)
+    if diffs: st.dataframe(pd.DataFrame(diffs),width="stretch")
     else: st.success("Nenhuma diferença nesta linha.")
 
 # ── Exportação ────────────────────────────────────────────────────────────────
@@ -1580,7 +1541,7 @@ def pg_auditoria():
     if tf!="Todos": df_f=df_f[df_f["Tipo"]==tf]
     if cf!="Todos": df_f=df_f[df_f["Campo"]==cf]
     if bf: df_f=df_f[df_f["Motivo"].astype(str).str.contains(bf,case=False)|df_f["Regra"].astype(str).str.contains(bf,case=False)]
-    st.dataframe(df_f,use_container_width=True,height=490)
+    st.dataframe(df_f,width="stretch",height=490)
 
 # ── Motor de Regras ───────────────────────────────────────────────────────────
 def pg_regras():
@@ -1589,11 +1550,10 @@ def pg_regras():
     st.session_state["regras"]=regras
     tab1,tab2=st.tabs(["📋 Regras Ativas","➕ Cadastrar / Editar"])
     with tab1:
-        # Filtro por tributo
         trib_f=st.selectbox("Filtrar por tributo:",["Todos","ICMS","PIS","COFINS","IPI"],key="rf_t")
         df_r=pd.DataFrame([asdict(r) for r in regras])
         if trib_f!="Todos" and "tributo" in df_r.columns: df_r=df_r[df_r["tributo"]==trib_f]
-        st.dataframe(df_r,use_container_width=True,height=420)
+        st.dataframe(df_r,width="stretch",height=420)
         c1,c2=st.columns(2)
         with c1:
             if st.button("🔄 Resetar para padrão"):
