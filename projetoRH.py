@@ -1,8 +1,8 @@
 """
 ╔═══════════════════════════════════════════════════════════════════════════════╗
-║          SPED AUDITOR — FISCAL INTELLIGENCE PLATFORM  v3.0                  ║
+║          SPED AUDITOR — FISCAL INTELLIGENCE PLATFORM  v3.1                  ║
 ║          EFD ICMS/IPI  +  EFD CONTRIBUIÇÕES (PIS/COFINS)                    ║
-║          Arquivo modular · Python + Streamlit                                ║
+║          Arquivo único · Python + Streamlit                                  ║
 ║          Compatível com Streamlit 1.58+ / Python 3.14+                      ║
 ╚═══════════════════════════════════════════════════════════════════════════════╝
 
@@ -49,18 +49,16 @@ st.set_page_config(
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded",
-    menu_items={"About": "SPED Auditor v3.0 | EFD ICMS/IPI + EFD Contribuições + CT-e"},
+    menu_items={"About": "SPED Auditor v3.1 | EFD ICMS/IPI + EFD Contribuições + CT-e"},
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # ████████████  CONSTANTES E UTILITÁRIOS  █████████████████████████████████████
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Tipos de arquivo SPED suportados
 TIPO_EFD_ICMS = "EFD_ICMS_IPI"
 TIPO_EFD_CONTRIB = "EFD_CONTRIBUICOES"
 
-# Campos numéricos padronizados
 CAMPOS_NUMERICOS = {
     "VL_ITEM", "VL_BC_ICMS", "ALIQ_ICMS", "VL_ICMS",
     "VL_BC_ICMS_ST", "ALIQ_ST", "VL_ICMS_ST",
@@ -72,7 +70,6 @@ CAMPOS_NUMERICOS = {
     "VL_ICMS_RECOLHER", "VL_TOT_DEBITOS", "VL_TOT_CREDITOS",
 }
 
-# Cores para UI
 CORES = {
     "primaria": "#0F2540",
     "secundaria": "#1A6BAD",
@@ -179,26 +176,22 @@ class LinhaRegistro:
     linha_original: str
     
     def get(self, indice: int, padrao: str = "") -> str:
-        """Obtém campo por índice de forma segura."""
         try:
             return self.campos[indice] if indice < len(self.campos) else padrao
         except IndexError:
             return padrao
     
     def set(self, indice: int, valor: str) -> None:
-        """Define campo por índice, expandindo lista se necessário."""
         while len(self.campos) <= indice:
             self.campos.append("")
         self.campos[indice] = valor
     
     def to_sped(self) -> str:
-        """Converte linha para formato SPED."""
         return "|" + "|".join(self.campos) + "|\n"
 
 
 @dataclass
 class MetadadosArquivo:
-    """Metadados extraídos do arquivo SPED."""
     tipo_escrituracao: str = ""
     periodo_apuracao: str = ""
     cnpj: str = ""
@@ -213,7 +206,6 @@ class MetadadosArquivo:
 
 @dataclass
 class ResultadoParser:
-    """Resultado do parser do arquivo SPED."""
     metadados: MetadadosArquivo
     linhas: List[LinhaRegistro]
     df: pd.DataFrame
@@ -240,7 +232,7 @@ class RegraFiscal:
     permite_valor_zero: bool
     criticidade: str
     ativa: bool = True
-    cod_mod: str = "*"  # Novo campo para modelo de documento
+    cod_mod: str = "*"
     
     def match_cst(self, valor: str) -> bool:
         return self.cst == "*" or valor == self.cst or valor.startswith(self.cst)
@@ -252,12 +244,15 @@ class RegraFiscal:
         return self.ind_oper in ("*", valor)
     
     def match_mod(self, valor: str) -> bool:
-        return self.cod_mod == "*" or valor == self.cod_mod
+        if self.cod_mod == "*":
+            return True
+        if not valor:
+            return self.cod_mod == "*"
+        return valor == self.cod_mod
 
 
 @dataclass
 class EntradaAuditoria:
-    """Entrada no log de auditoria."""
     id: str
     timestamp: str
     usuario: str
@@ -274,7 +269,6 @@ class EntradaAuditoria:
 
 @dataclass
 class DadosCTe:
-    """Dados extraídos de um XML CT-e."""
     chave: str = ""
     num_doc: str = ""
     serie: str = ""
@@ -315,7 +309,6 @@ class MapaCampos:
     """Gerencia o mapeamento de campos para cada registro SPED."""
     
     _MAPAS: Dict[str, Dict[str, int]] = {
-        # Bloco 0 — Abertura
         "0000": {"COD_VER": 1, "COD_FIN": 2, "DT_INI": 3, "DT_FIN": 4,
                  "NOME": 5, "CNPJ": 6, "CPF": 7, "UF": 8, "IE": 9,
                  "COD_MUN": 10, "IND_PERFIL": 13, "IND_OPORT": 14},
@@ -323,8 +316,6 @@ class MapaCampos:
                  "IE": 6, "COD_MUN": 7, "END": 9, "BAIRRO": 12},
         "0200": {"COD_ITEM": 1, "DESCR_ITEM": 2, "COD_BARRA": 3, "UNID_INV": 5,
                  "TIPO_ITEM": 6, "COD_NCM": 7, "ALIQ_ICMS": 11},
-        
-        # Bloco C — Documentos Fiscais
         "C100": {"IND_OPER": 1, "IND_EMIT": 2, "COD_PART": 3, "COD_MOD": 4,
                  "COD_SIT": 5, "SER": 6, "NUM_DOC": 7, "CHV_NFE": 8,
                  "DT_DOC": 9, "DT_E_S": 10, "VL_DOC": 11,
@@ -343,8 +334,6 @@ class MapaCampos:
         "C190": {"CST_ICMS": 1, "CFOP": 2, "ALIQ_ICMS": 3,
                  "VL_OPR": 4, "VL_BC_ICMS": 5, "VL_ICMS": 6,
                  "VL_BC_ICMS_ST": 7, "VL_ICMS_ST": 8},
-        
-        # Bloco D — Transportes
         "D100": {"IND_OPER": 1, "COD_PART": 3, "COD_MOD": 4, "COD_SIT": 5,
                  "NUM_DOC": 8, "DT_DOC": 10, "VL_DOC": 14,
                  "VL_BC_ICMS": 18, "ALIQ_ICMS": 19, "VL_ICMS": 20,
@@ -352,14 +341,10 @@ class MapaCampos:
                  "CST_COFINS": 25, "VL_BC_COFINS": 26, "ALIQ_COFINS": 27, "VL_COFINS": 28},
         "D190": {"CST_ICMS": 1, "CFOP": 2, "ALIQ_ICMS": 3,
                  "VL_OPR": 4, "VL_BC_ICMS": 5, "VL_ICMS": 6},
-        
-        # Bloco E — Apuração ICMS
         "E110": {"VL_TOT_DEBITOS": 1, "VL_AJ_DEBITOS": 2,
                  "VL_TOT_CREDITOS": 5, "VL_AJ_CREDITOS": 6,
                  "VL_SLD_APURADO": 10, "VL_ICMS_RECOLHER": 12},
         "E116": {"COD_OR": 1, "VL_OR": 2, "DT_VCTO": 3, "COD_REC": 4},
-        
-        # Bloco A — Serviços
         "A100": {"IND_OPER": 1, "IND_EMIT": 2, "COD_PART": 3, "COD_SIT": 4,
                  "SER": 5, "SUB": 6, "NUM_DOC": 7, "CHV_NFSE": 8,
                  "DT_DOC": 9, "DT_EXE_SERV": 10, "VL_DOC": 11,
@@ -370,8 +355,6 @@ class MapaCampos:
                  "CST_PIS": 8, "VL_BC_PIS": 9, "ALIQ_PIS": 10, "VL_PIS": 11,
                  "CST_COFINS": 12, "VL_BC_COFINS": 13, "ALIQ_COFINS": 14, "VL_COFINS": 15,
                  "COD_CTA": 16},
-        
-        # Bloco C — Contribuições
         "C010": {"IND_ESCRI": 1},
         "C180": {"COD_CRED": 1, "IND_ORIG_CRED": 2, "VL_BC_PIS": 3, "ALIQ_PIS": 4,
                  "QUANT_BC_PIS": 5, "VL_PIS": 6, "VL_BC_COFINS": 7, "ALIQ_COFINS": 8,
@@ -390,14 +373,10 @@ class MapaCampos:
                  "QUANT_BC_PIS": 5, "VL_PIS": 6, "COD_CTA": 7},
         "C485": {"CST_COFINS": 1, "VL_ITEM": 2, "VL_BC_COFINS": 3, "ALIQ_COFINS": 4,
                  "QUANT_BC_COFINS": 5, "VL_COFINS": 6, "COD_CTA": 7},
-        
-        # Bloco D — Contribuições
         "D101": {"IND_NAT_FRT": 1, "VL_ITEM": 2, "CST_PIS": 3, "NAT_BC_CRED": 4,
                  "VL_BC_PIS": 5, "ALIQ_PIS": 6, "VL_PIS": 7, "COD_CTA": 8},
         "D105": {"IND_NAT_FRT": 1, "VL_ITEM": 2, "CST_COFINS": 3, "NAT_BC_CRED": 4,
                  "VL_BC_COFINS": 5, "ALIQ_COFINS": 6, "VL_COFINS": 7, "COD_CTA": 8},
-        
-        # Bloco F — Demais Documentos
         "F100": {"IND_OPER": 1, "COD_PART": 2, "DT_OPER": 3, "VL_OPER": 4,
                  "COD_CRED": 5, "IND_ORIG_CRED": 6, "VL_BC_PIS": 7, "ALIQ_PIS": 8,
                  "VL_PIS": 9, "VL_BC_COFINS": 10, "ALIQ_COFINS": 11, "VL_COFINS": 12},
@@ -412,8 +391,6 @@ class MapaCampos:
         "F200": {"IND_OPER": 1, "COD_PART": 2, "COD_ITEM": 3, "DT_OPER": 4,
                  "VL_OPER": 5, "CST_PIS": 6, "VL_BC_PIS": 7, "ALIQ_PIS": 8,
                  "VL_PIS": 9, "CST_COFINS": 10, "VL_BC_COFINS": 11, "ALIQ_COFINS": 12, "VL_COFINS": 13},
-        
-        # Bloco M — Apuração PIS/COFINS
         "M100": {"COD_CRED": 1, "IND_CRED_ORI": 2, "VL_BC_PIS": 3, "ALIQ_PIS": 4,
                  "QUANT_BC_PIS": 5, "VL_CRED": 6, "VL_AJUS_ACRES": 7, "VL_AJUS_REDUC": 8,
                  "VL_CRED_DIF": 9, "VL_CRED_DISP": 10, "IND_DESC_CRED": 11, "VL_CRED_DESC": 12},
@@ -435,33 +412,26 @@ class MapaCampos:
         "M610": {"COD_CONT": 1, "VL_REC_BRT": 2, "VL_BC_CONT": 3, "ALIQ_COFINS": 4,
                  "QUANT_BC_COFINS": 5, "VL_CONT_APUR": 6, "VL_AJUS_ACRES": 7, "VL_AJUS_REDUC": 8,
                  "VL_CONT_DIFER": 9, "VL_CONT_DIFER_ANT": 10, "VL_CONT_PER": 11},
-        
-        # Bloco P — Contribuição Previdenciária
         "P001": {"IND_MOV": 1},
         "P010": {"CNPJ": 1},
         "P100": {"DT_INI": 1, "DT_FIN": 2, "VL_REC_TOT_EST": 3, "COD_ATIV_ECON": 4,
                  "VL_REC_ATIV_ESTAB": 5, "VL_EXC": 6, "VL_REC_BC": 7, "ALIQ_CONTRIB_APUR": 8,
                  "VL_CONTRIB_APUR": 9, "VL_CONT_RECOL": 10},
         "P110": {"NUM_CAMPO": 1, "COD_DET": 2, "DET_VALOR": 3},
-        
-        # Bloco 9 — Encerramento
         "9900": {"REG": 1, "QTD": 2},
         "9999": {"QTD": 1},
     }
     
     @classmethod
     def get_mapa(cls, registro: str) -> Dict[str, int]:
-        """Obtém o mapa de campos para um registro."""
         return cls._MAPAS.get(registro, {})
     
     @classmethod
     def get_campos(cls, registro: str) -> List[str]:
-        """Obtém lista de campos para um registro."""
         return list(cls.get_mapa(registro).keys())
     
     @classmethod
     def get_indice(cls, registro: str, campo: str) -> Optional[int]:
-        """Obtém o índice de um campo no registro."""
         mapa = cls.get_mapa(registro)
         return mapa.get(campo)
 
@@ -475,7 +445,6 @@ class GerenciadorRegras:
     
     ARQUIVO_REGRA = "sped_regras_fiscais.json"
     
-    # Regras padrão de ICMS
     REGRAS_ICMS = [
         ("ICMS", "000", "*", "Tributado Integralmente", True, True, True, "VL_ITEM", 12.0, "critica"),
         ("ICMS", "010", "*", "Tributado + ST", True, True, True, "VL_ITEM", 12.0, "critica"),
@@ -490,7 +459,6 @@ class GerenciadorRegras:
         ("ICMS", "090", "*", "Outras Situações", False, False, False, "VL_ITEM", None, "aviso"),
     ]
     
-    # Regras padrão de PIS
     REGRAS_PIS = [
         ("PIS", "01", "*", "PIS Não Cumulativo Alíq. Básica", True, True, True, "VL_ITEM", 1.65, "critica"),
         ("PIS", "02", "*", "PIS Não Cumulativo Alíq. Diferenciada", True, True, True, "VL_ITEM", None, "critica"),
@@ -513,7 +481,6 @@ class GerenciadorRegras:
         ("PIS", "99", "*", "PIS Outras Saídas", False, False, False, "VL_ITEM", None, "info"),
     ]
     
-    # Regras padrão de COFINS
     REGRAS_COFINS = [
         ("COFINS", "01", "*", "COFINS Não Cumulativo Alíq. Básica", True, True, True, "VL_ITEM", 7.6, "critica"),
         ("COFINS", "02", "*", "COFINS Não Cumulativo Alíq. Diferenciada", True, True, True, "VL_ITEM", None, "critica"),
@@ -533,7 +500,6 @@ class GerenciadorRegras:
     
     @classmethod
     def _build_regras_padrao(cls) -> List[RegraFiscal]:
-        """Constrói lista de regras padrão."""
         regras = []
         
         for trib, cst, cfop, desc, eb, ea, ev, bc, alp, crit in cls.REGRAS_ICMS:
@@ -580,7 +546,6 @@ class GerenciadorRegras:
     
     @classmethod
     def carregar(cls) -> List[RegraFiscal]:
-        """Carrega regras do arquivo ou retorna padrão."""
         if os.path.exists(cls.ARQUIVO_REGRA):
             try:
                 with open(cls.ARQUIVO_REGRA, encoding="utf-8") as f:
@@ -592,13 +557,17 @@ class GerenciadorRegras:
     
     @classmethod
     def salvar(cls, regras: List[RegraFiscal]) -> None:
-        """Salva regras no arquivo."""
         with open(cls.ARQUIVO_REGRA, "w", encoding="utf-8") as f:
             json.dump([asdict(r) for r in regras], f, ensure_ascii=False, indent=2)
     
     @classmethod
     def buscar(cls, regras: List[RegraFiscal], tributo: str, cst: str, cfop: str = "*", cod_mod: str = "*") -> Optional[RegraFiscal]:
         """Busca a regra mais específica que corresponde aos critérios."""
+        if cod_mod is None or cod_mod == "":
+            cod_mod = "*"
+        if cfop is None or cfop == "":
+            cfop = "*"
+        
         candidatos = [
             r for r in regras 
             if r.ativa and 
@@ -611,7 +580,6 @@ class GerenciadorRegras:
         if not candidatos:
             return None
         
-        # Prioriza regras mais específicas
         def pontuacao(r: RegraFiscal) -> int:
             score = 0
             if r.cst != "*":
@@ -626,7 +594,6 @@ class GerenciadorRegras:
     
     @classmethod
     def calcular(cls, regra: RegraFiscal, base: float, aliquota: float) -> float:
-        """Calcula valor do tributo conforme regra."""
         if regra.formula == "zero":
             return 0.0
         r = Decimal(str(base)) * Decimal(str(aliquota)) / Decimal("100")
@@ -642,7 +609,6 @@ class ParserSPED:
     
     @staticmethod
     def parse(conteudo: bytes) -> ResultadoParser:
-        """Parseia arquivo SPED."""
         texto = Utilitarios.decode_bytes(conteudo)
         erros: List[str] = []
         linhas: List[LinhaRegistro] = []
@@ -678,7 +644,6 @@ class ParserSPED:
     
     @staticmethod
     def _extrair_metadados(linhas: List[LinhaRegistro]) -> MetadadosArquivo:
-        """Extrai metadados do arquivo."""
         meta = MetadadosArquivo()
         
         for l in linhas:
@@ -699,7 +664,6 @@ class ParserSPED:
     
     @staticmethod
     def _criar_dataframe(linhas: List[LinhaRegistro]) -> pd.DataFrame:
-        """Cria DataFrame a partir das linhas parseadas."""
         rows = []
         
         for l in linhas:
@@ -710,10 +674,8 @@ class ParserSPED:
                 "linha_original": l.linha_original,
             }
             
-            # Adiciona campos genéricos
             row.update({f"campo_{j:02d}": l.get(j) for j in range(min(len(l.campos), 55))})
             
-            # Adiciona campos mapeados
             mapa = MapaCampos.get_mapa(l.registro)
             if mapa:
                 for nome, idx in mapa.items():
@@ -723,7 +685,6 @@ class ParserSPED:
         
         df = pd.DataFrame(rows)
         
-        # Converte campos numéricos
         for col in CAMPOS_NUMERICOS:
             if col in df.columns:
                 df[col] = df[col].apply(Utilitarios.to_float)
@@ -732,10 +693,8 @@ class ParserSPED:
     
     @staticmethod
     def _detectar_tipo(linhas: List[LinhaRegistro], metadados: MetadadosArquivo) -> str:
-        """Detecta o tipo de arquivo SPED."""
         blocos = set(metadados.blocos_presentes)
         
-        # Verifica código de versão
         cod_ver = ""
         for l in linhas:
             if l.registro == "0000":
@@ -751,12 +710,10 @@ class ParserSPED:
     
     @staticmethod
     def reconstruir(linhas: List[LinhaRegistro]) -> bytes:
-        """Reconstrói arquivo SPED a partir das linhas."""
         return "".join(l.to_sped() for l in sorted(linhas, key=lambda x: x.numero_linha)).encode("utf-8")
     
     @staticmethod
     def sync_df_linhas(df: pd.DataFrame, linhas: List[LinhaRegistro]) -> List[LinhaRegistro]:
-        """Sincroniza DataFrame com linhas."""
         mapa = {l.numero_linha: l for l in linhas}
         
         for _, row in df.iterrows():
@@ -790,7 +747,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def validar(df: pd.DataFrame, regras: List[RegraFiscal], tipo_arquivo: str) -> pd.DataFrame:
-        """Valida arquivo SPED e retorna inconsistências."""
         inconsistencias: List[Dict[str, Any]] = []
         
         def adicionar(nl: int, reg: str, bloco: str, tipo: str, severidade: str,
@@ -813,37 +769,16 @@ class ValidadorFiscal:
                 "corrigido": False,
             })
         
-        # Valida tributos nos registros C170
         ValidadorFiscal._validar_tributos_c170(df, regras, adicionar)
-        
-        # Valida tributos nos registros A170
         ValidadorFiscal._validar_tributos_a170(df, regras, adicionar)
-        
-        # Valida tributos nos registros C185
         ValidadorFiscal._validar_tributos_c185(df, regras, adicionar)
-        
-        # Valida tributos nos registros D100
         ValidadorFiscal._validar_tributos_d100(df, regras, adicionar)
-        
-        # Valida F100
         ValidadorFiscal._validar_f100(df, regras, adicionar)
-        
-        # Valida totalização C100 vs C170
         ValidadorFiscal._validar_totalizacao_c100(df, adicionar)
-        
-        # Valida C190
         ValidadorFiscal._validar_c190(df, regras, adicionar)
-        
-        # Valida apuração PIS/COFINS
         ValidadorFiscal._validar_apuracao(df, adicionar)
-        
-        # Valida blocos abertos/fechados
         ValidadorFiscal._validar_blocos(df, adicionar)
-        
-        # Valida campos obrigatórios
         ValidadorFiscal._validar_campos_obrigatorios(df, adicionar)
-        
-        # Valida valores negativos
         ValidadorFiscal._validar_negativos(df, adicionar)
         
         return pd.DataFrame(inconsistencias)
@@ -853,7 +788,6 @@ class ValidadorFiscal:
                         tributo: str, campo_cst: str, campo_bc: str,
                         campo_aliq: str, campo_vl: str, campo_item: str,
                         regras: List[RegraFiscal], adicionar: Callable):
-        """Valida um tributo específico."""
         cst = str(row.get(campo_cst, "") or "").strip()
         bc = Utilitarios.to_float(row.get(campo_bc))
         aliq = Utilitarios.to_float(row.get(campo_aliq))
@@ -929,7 +863,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_tributos_c170(df: pd.DataFrame, regras: List[RegraFiscal], adicionar: Callable):
-        """Valida tributos em C170."""
         for _, row in df[df["registro"] == "C170"].iterrows():
             nl = int(row.get("numero_linha", 0))
             ValidadorFiscal._validar_tributo(
@@ -950,7 +883,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_tributos_a170(df: pd.DataFrame, regras: List[RegraFiscal], adicionar: Callable):
-        """Valida tributos em A170."""
         for _, row in df[df["registro"] == "A170"].iterrows():
             nl = int(row.get("numero_linha", 0))
             ValidadorFiscal._validar_tributo(
@@ -966,7 +898,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_tributos_c185(df: pd.DataFrame, regras: List[RegraFiscal], adicionar: Callable):
-        """Valida tributos em C185."""
         for _, row in df[df["registro"] == "C185"].iterrows():
             nl = int(row.get("numero_linha", 0))
             ValidadorFiscal._validar_tributo(
@@ -982,7 +913,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_tributos_d100(df: pd.DataFrame, regras: List[RegraFiscal], adicionar: Callable):
-        """Valida tributos em D100."""
         for _, row in df[df["registro"] == "D100"].iterrows():
             nl = int(row.get("numero_linha", 0))
             ValidadorFiscal._validar_tributo(
@@ -998,7 +928,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_f100(df: pd.DataFrame, regras: List[RegraFiscal], adicionar: Callable):
-        """Valida F100."""
         regra_base = RegraFiscal(
             id="", tributo="PIS", cst="01", cfop="*", ind_oper="*",
             descricao="", exige_base=True, exige_aliquota=True, exige_valor=True,
@@ -1049,7 +978,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_totalizacao_c100(df: pd.DataFrame, adicionar: Callable):
-        """Valida totalização de C100 vs C170."""
         df_docs = df[df["registro"].isin(["C100", "C170"])].sort_values("numero_linha")
         c100_atual = None
         c100_nl = 0
@@ -1078,7 +1006,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_c190(df: pd.DataFrame, regras: List[RegraFiscal], adicionar: Callable):
-        """Valida C190."""
         for _, row in df[df["registro"] == "C190"].iterrows():
             cst = str(row.get("CST_ICMS", "") or "").strip()
             cfop = str(row.get("CFOP", "") or "").strip()
@@ -1099,7 +1026,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_apuracao(df: pd.DataFrame, adicionar: Callable):
-        """Valida apuração de PIS/COFINS."""
         for reg_m, campo_rec in [("M200", "VL_TOT_CONT_REC"), ("M600", "VL_TOT_CONT_REC")]:
             for _, row in df[df["registro"] == reg_m].iterrows():
                 nl = int(row.get("numero_linha", 0))
@@ -1121,7 +1047,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_blocos(df: pd.DataFrame, adicionar: Callable):
-        """Valida abertura e fechamento de blocos."""
         for bloco in df["bloco"].unique():
             if bloco == "?":
                 continue
@@ -1139,7 +1064,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_campos_obrigatorios(df: pd.DataFrame, adicionar: Callable):
-        """Valida campos obrigatórios."""
         df0 = df[df["registro"] == "0000"]
         if df0.empty:
             adicionar(
@@ -1164,7 +1088,6 @@ class ValidadorFiscal:
     
     @staticmethod
     def _validar_negativos(df: pd.DataFrame, adicionar: Callable):
-        """Valida valores negativos em campos críticos."""
         df_c170 = df[df["registro"] == "C170"]
         campos_negativos = ["VL_ITEM", "VL_BC_ICMS", "VL_ICMS", "ALIQ_ICMS",
                            "VL_BC_PIS", "VL_PIS", "VL_BC_COFINS", "VL_COFINS"]
@@ -1203,7 +1126,6 @@ class TrilhaAuditoria:
     def registrar(self, nl: int, reg: str, bloco: str, campo: str,
                   ant: str, novo: str, regra: str = "", motivo: str = "",
                   tipo: str = "MANUAL", usuario: str = "analista") -> None:
-        """Registra uma entrada no log."""
         self._log.append(EntradaAuditoria(
             str(uuid.uuid4())[:8],
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1220,7 +1142,6 @@ class TrilhaAuditoria:
         ))
     
     def to_df(self) -> pd.DataFrame:
-        """Converte log para DataFrame."""
         if not self._log:
             return pd.DataFrame()
         
@@ -1261,7 +1182,6 @@ class EditorSped:
         return self._original
     
     def _set_valor(self, idx: int, campo: str, valor: Any) -> None:
-        """Define valor de um campo no DataFrame."""
         if campo in CAMPOS_NUMERICOS and campo in self._atual.columns:
             vn = Utilitarios.to_float(valor)
             if vn is not None:
@@ -1277,7 +1197,6 @@ class EditorSped:
     
     def editar(self, nl: int, campo: str, valor: Any, motivo: str = "",
                regra: str = "", usuario: str = "analista") -> bool:
-        """Edita um campo em uma linha específica."""
         idx = self._atual[self._atual["numero_linha"] == nl].index
         if idx.empty:
             return False
@@ -1307,7 +1226,6 @@ class EditorSped:
     def massa(self, nls: List[int], campo: str, valor: Any,
               motivo: str = "Correção em massa",
               regra: str = "", usuario: str = "analista") -> int:
-        """Edita um campo em múltiplas linhas."""
         self._historico.append(self._atual.copy())
         count = 0
         
@@ -1346,7 +1264,6 @@ class EditorSped:
                          campo_aliq: str, campo_vl: str,
                          motivo: str = "Recálculo automático",
                          usuario: str = "analista") -> int:
-        """Recalcula valores tributários em massa."""
         self._historico.append(self._atual.copy())
         count = 0
         
@@ -1391,14 +1308,12 @@ class EditorSped:
         return count
     
     def desfazer(self) -> bool:
-        """Desfaz a última operação."""
         if not self._historico:
             return False
         self._atual = self._historico.pop()
         return True
     
     def restaurar(self, nls: Optional[List[int]] = None) -> None:
-        """Restaura linhas específicas ou todo o DataFrame."""
         self._historico.append(self._atual.copy())
         
         if nls:
@@ -1411,14 +1326,12 @@ class EditorSped:
             self._atual = self._original.copy()
     
     def get_alterados(self) -> pd.DataFrame:
-        """Retorna linhas que foram alteradas."""
         try:
             return self._atual[self._atual.ne(self._original).any(axis=1)]
         except:
             return pd.DataFrame()
     
     def preview(self, nls: List[int]) -> pd.DataFrame:
-        """Prévia das alterações para linhas específicas."""
         rows = []
         
         for nl in nls:
@@ -1463,13 +1376,11 @@ class Exportador:
     
     @classmethod
     def _estilo_borda(cls) -> Border:
-        """Cria estilo de borda para Excel."""
         return Border(bottom=Side(style="thin", color="CCCCCC"),
                       right=Side(style="thin", color="CCCCCC"))
     
     @classmethod
     def _criar_aba(cls, ws, df: pd.DataFrame, titulo: str, col_sev: str = "") -> None:
-        """Cria uma aba no Excel com dados formatados."""
         ws.sheet_view.showGridLines = False
         
         if df is None or df.empty:
@@ -1480,7 +1391,6 @@ class Exportador:
         n_cols = len(df.columns)
         ultima_col = get_column_letter(n_cols)
         
-        # Cabeçalho
         ws.merge_cells(f"A1:{ultima_col}1")
         c = ws["A1"]
         c.value = titulo
@@ -1489,7 +1399,6 @@ class Exportador:
         c.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 26
         
-        # Cabeçalho das colunas
         borda = cls._estilo_borda()
         for ci, col in enumerate(df.columns, 1):
             h = ws.cell(2, ci, str(col).upper())
@@ -1499,7 +1408,6 @@ class Exportador:
             h.border = borda
         ws.row_dimensions[2].height = 22
         
-        # Dados
         mapa_cores = {
             "CRITICA": "FFF0F0",
             "AVISO": "FFF8DC",
@@ -1518,7 +1426,6 @@ class Exportador:
                 cell.border = borda
                 cell.alignment = Alignment(vertical="center")
         
-        # Ajuste de largura
         for ci, col in enumerate(df.columns, 1):
             largura = max(len(str(col)), df[col].astype(str).str.len().max() if len(df) > 0 else 10)
             ws.column_dimensions[get_column_letter(ci)].width = min(largura + 4, 42)
@@ -1527,7 +1434,6 @@ class Exportador:
     
     @classmethod
     def _criar_resumo(cls, ws, df_inc: pd.DataFrame, df_alt: pd.DataFrame, meta: Dict[str, str]) -> None:
-        """Cria aba de resumo gerencial."""
         ws.sheet_view.showGridLines = False
         
         ws.merge_cells("A1:F1")
@@ -1538,7 +1444,6 @@ class Exportador:
         c.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[1].height = 36
         
-        # Dados da empresa
         dados = [
             ("Empresa:", meta.get("nome_empresa", "—")),
             ("CNPJ:", meta.get("cnpj", "—")),
@@ -1552,7 +1457,6 @@ class Exportador:
             ws.cell(i, 1, label).font = Font(bold=True, size=11)
             ws.cell(i, 2, valor).font = Font(size=11)
         
-        # Indicadores
         ws.cell(11, 1, "INDICADORES").font = Font(bold=True, size=12, color=cls._CORES["cabecalho"][2:])
         
         def contar(tipo: str) -> int:
@@ -1592,24 +1496,14 @@ class Exportador:
     def to_excel(cls, df_inc: pd.DataFrame, df_alt: pd.DataFrame,
                  df_aud: pd.DataFrame, df_reg: pd.DataFrame,
                  meta: Dict[str, str]) -> bytes:
-        """Exporta dados para Excel."""
         buf = io.BytesIO()
         wb = openpyxl.Workbook()
         wb.remove(wb.active)
         
-        # Aba de resumo
         cls._criar_resumo(wb.create_sheet("Resumo Gerencial"), df_inc, df_alt, meta)
-        
-        # Aba de inconsistências
         cls._criar_aba(wb.create_sheet("Inconsistências"), df_inc, "Inconsistências Fiscais", "severidade")
-        
-        # Aba de alterações
         cls._criar_aba(wb.create_sheet("Registros Alterados"), df_alt, "Registros Modificados")
-        
-        # Aba de auditoria
         cls._criar_aba(wb.create_sheet("Log de Auditoria"), df_aud, "Trilha de Auditoria")
-        
-        # Aba de regras
         cls._criar_aba(wb.create_sheet("Regras Tributárias"), df_reg, "Catálogo de Regras")
         
         wb.save(buf)
@@ -1618,7 +1512,6 @@ class Exportador:
     
     @classmethod
     def to_csv(cls, df: pd.DataFrame) -> bytes:
-        """Exporta DataFrame para CSV."""
         buf = io.StringIO()
         df.to_csv(buf, index=False, sep=";", encoding="utf-8-sig")
         return buf.getvalue().encode("utf-8-sig")
@@ -1633,7 +1526,6 @@ class ImportadorCTe:
     
     @staticmethod
     def _txt(elem: ET.Element, *caminho: str, ns: str = "") -> str:
-        """Obtém texto de elemento XML com namespace."""
         atual = elem
         for tag in caminho:
             tag_com_ns = f"{{{ns}}}{tag}" if ns else tag
@@ -1644,7 +1536,6 @@ class ImportadorCTe:
     
     @staticmethod
     def _fmt_valor(valor: str) -> str:
-        """Formata valor numérico para string SPED."""
         if not valor:
             return ""
         try:
@@ -1655,7 +1546,6 @@ class ImportadorCTe:
     
     @classmethod
     def parse_xml(cls, conteudo_bytes: bytes) -> DadosCTe:
-        """Parseia XML CT-e."""
         dados = DadosCTe()
         ns = ""
         
@@ -1666,7 +1556,6 @@ class ImportadorCTe:
             dados.erros.append(f"XML inválido: {e}")
             return dados
         
-        # Encontrar nó infCte
         def find_any(elem, tag):
             r = elem.find(f"{{{ns}}}{tag}" if ns else tag)
             if r is None and ns:
@@ -1683,7 +1572,6 @@ class ImportadorCTe:
             dados.erros.append("Elemento infCte não encontrado no XML.")
             return dados
         
-        # Identificação
         ide = find_any(inf_cte, "ide")
         if ide is not None:
             dados.num_doc = cls._txt(ide, "nCT", ns=ns)
@@ -1694,27 +1582,23 @@ class ImportadorCTe:
             dt_emi = cls._txt(ide, "dhEmi", ns=ns) or cls._txt(ide, "dEmi", ns=ns)
             dados.dt_emissao = Utilitarios.formatar_data_sped(dt_emi)
         
-        # Chave de acesso
         chave_raw = inf_cte.get("Id", "")
         if chave_raw.startswith("CTe"):
             dados.chave = chave_raw[3:]
         else:
             dados.chave = chave_raw
         
-        # Emitente
         emit = find_any(inf_cte, "emit")
         if emit is not None:
             dados.cnpj_emit = cls._txt(emit, "CNPJ", ns=ns)
             dados.ie_emit = cls._txt(emit, "IE", ns=ns)
             dados.nome_emit = cls._txt(emit, "xNome", ns=ns)
         
-        # Valores
         v_prest = find_any(inf_cte, "vPrest")
         if v_prest is not None:
             dados.vl_doc = cls._fmt_valor(cls._txt(v_prest, "vTPrest", ns=ns))
             dados.vl_serv = cls._fmt_valor(cls._txt(v_prest, "vRec", ns=ns))
         
-        # ICMS
         imp = find_any(inf_cte, "imp")
         if imp is not None:
             icms_node = find_any(imp, "ICMS")
@@ -1728,7 +1612,6 @@ class ImportadorCTe:
                         dados.vl_icms = cls._fmt_valor(cls._txt(filho, "vICMS", ns=ns))
                         break
             
-            # PIS
             pis_node = find_any(imp, "PIS")
             if pis_node is not None:
                 for tag in ["PISAliq", "PISQtde", "PISNT", "PISOutr"]:
@@ -1740,7 +1623,6 @@ class ImportadorCTe:
                         dados.vl_pis = cls._fmt_valor(cls._txt(filho, "vPIS", ns=ns))
                         break
             
-            # COFINS
             cof_node = find_any(imp, "COFINS")
             if cof_node is not None:
                 for tag in ["COFINSAliq", "COFINSQtde", "COFINSNT", "COFINSOutr"]:
@@ -1761,11 +1643,9 @@ class ImportadorCTe:
                       cst_pis_padrao: str = "50",
                       cst_cofins_padrao: str = "50",
                       ind_nat_frt: str = "0") -> List[LinhaRegistro]:
-        """Converte DadosCTe para linhas SPED."""
         linhas: List[LinhaRegistro] = []
         nl = nl_inicio
         
-        # Resolve PIS/COFINS
         cst_p = dados.cst_pis or cst_pis_padrao
         bc_p = dados.vl_bc_pis or dados.vl_serv or dados.vl_doc
         aliq_p = dados.aliq_pis or aliq_pis_padrao
@@ -1794,7 +1674,6 @@ class ImportadorCTe:
             except:
                 vl_c = ""
         
-        # D100
         campos_d100 = [
             "D100",
             dados.ind_oper,
@@ -1834,7 +1713,6 @@ class ImportadorCTe:
         linhas.append(LinhaRegistro(nl, "D", "D100", campos_d100, linha_raw))
         nl += 1
         
-        # D101
         vl_item_frt = dados.vl_serv or dados.vl_doc
         campos_d101 = [
             "D101",
@@ -1851,7 +1729,6 @@ class ImportadorCTe:
         linhas.append(LinhaRegistro(nl, "D", "D101", campos_d101, linha_raw))
         nl += 1
         
-        # D105
         campos_d105 = [
             "D105",
             ind_nat_frt,
@@ -1992,7 +1869,6 @@ class UI:
     
     @staticmethod
     def css():
-        """Aplica estilos CSS personalizados."""
         st.markdown(f"""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -2049,7 +1925,6 @@ class UI:
     
     @staticmethod
     def card(col, label: str, valor: Any, classe: str = ""):
-        """Exibe um card estilizado."""
         cores = {
             "critico": CORES["critico"],
             "aviso": CORES["aviso"],
@@ -2069,12 +1944,11 @@ class UI:
     
     @staticmethod
     def sidebar() -> str:
-        """Renderiza a barra lateral."""
         with st.sidebar:
             st.markdown(f"""
             <div style="padding:10px 0 18px;text-align:center;">
                 <span style="font-size:1.4rem;font-weight:800;color:#fff;">🔍 SPED Auditor</span><br>
-                <span style="font-size:.68rem;color:#7BAFD4;">EFD ICMS/IPI + Contribuições  v3.0</span>
+                <span style="font-size:.68rem;color:#7BAFD4;">EFD ICMS/IPI + Contribuições  v3.1</span>
             </div>
             """, unsafe_allow_html=True)
             
@@ -2107,7 +1981,6 @@ class UI:
     
     @staticmethod
     def _cols_rel(df: pd.DataFrame) -> List[str]:
-        """Retorna colunas relevantes para exibição."""
         base = ["numero_linha", "bloco", "registro"]
         extras = [
             c for c in df.columns
@@ -2118,7 +1991,6 @@ class UI:
     
     @staticmethod
     def _metricas(df: pd.DataFrame, tipo: str) -> Dict[str, int]:
-        """Calcula métricas do DataFrame."""
         metrics = {
             "total_linhas": len(df),
             "total_c100": int((df["registro"] == "C100").sum()) if "registro" in df.columns else 0,
@@ -2155,7 +2027,6 @@ class Paginas:
     
     @staticmethod
     def upload():
-        """Página de upload."""
         st.markdown('<div class="sec">Upload do Arquivo SPED</div>', unsafe_allow_html=True)
         
         c1, c2 = st.columns([3, 2])
@@ -2229,7 +2100,6 @@ class Paginas:
     
     @staticmethod
     def dashboard():
-        """Página de dashboard."""
         st.markdown('<div class="sec">Dashboard — Visão Geral</div>', unsafe_allow_html=True)
         
         res = st.session_state.get("resultado")
@@ -2244,7 +2114,6 @@ class Paginas:
         meta = res.metadados
         metricas = UI._metricas(df, res.tipo_arquivo)
         
-        # Métricas principais
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Empresa", (meta.nome_empresa or "—")[:22])
         c2.metric("CNPJ", meta.cnpj or "—")
@@ -2254,7 +2123,6 @@ class Paginas:
         
         st.markdown("---")
         
-        # Cards de métricas
         cols = st.columns(8)
         UI.card(cols[0], "Total Linhas", f"{metricas['total_linhas']:,}")
         UI.card(cols[1], "NF-e (C100)", f"{metricas['total_c100']:,}")
@@ -2272,7 +2140,6 @@ class Paginas:
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Cards de validação
         cols = st.columns(6)
         UI.card(cols[0], "Sem Base ICMS", f"{metricas['sem_base_icms']:,}", "critico" if metricas['sem_base_icms'] else "ok")
         UI.card(cols[1], "Sem VL ICMS", f"{metricas['sem_icms']:,}", "critico" if metricas['sem_icms'] else "ok")
@@ -2283,7 +2150,6 @@ class Paginas:
         
         st.markdown("---")
         
-        # Gráficos
         g1, g2 = st.columns(2)
         
         with g1:
@@ -2358,7 +2224,6 @@ class Paginas:
     
     @staticmethod
     def blocos():
-        """Página de blocos."""
         st.markdown('<div class="sec">Visão por Blocos</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2396,7 +2261,6 @@ class Paginas:
     
     @staticmethod
     def registros():
-        """Página de registros."""
         st.markdown('<div class="sec">Visão por Registros</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2426,7 +2290,6 @@ class Paginas:
     
     @staticmethod
     def notas():
-        """Página de notas fiscais."""
         st.markdown('<div class="sec">Notas Fiscais / Documentos (C100 · A100 · D100)</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2474,7 +2337,6 @@ class Paginas:
     
     @staticmethod
     def itens():
-        """Página de itens."""
         st.markdown('<div class="sec">Itens de NF-e (C170) e Serviços (A170)</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2537,7 +2399,6 @@ class Paginas:
     
     @staticmethod
     def pis_cofins():
-        """Página de PIS/COFINS."""
         st.markdown('<div class="sec">PIS / COFINS — Apuração (Bloco M)</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2578,7 +2439,6 @@ class Paginas:
     
     @staticmethod
     def inconsistencias():
-        """Página de inconsistências."""
         st.markdown('<div class="sec">Inconsistências Fiscais</div>', unsafe_allow_html=True)
         
         df_inc = st.session_state.get("df_inc", pd.DataFrame())
@@ -2656,7 +2516,6 @@ class Paginas:
     
     @staticmethod
     def massa():
-        """Página de correções em massa."""
         st.markdown('<div class="sec">Correções em Massa</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2785,7 +2644,6 @@ class Paginas:
     
     @staticmethod
     def editor():
-        """Página de editor manual."""
         st.markdown('<div class="sec">Editor Manual de Registros</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2880,7 +2738,6 @@ class Paginas:
     
     @staticmethod
     def exportacao():
-        """Página de exportação."""
         st.markdown('<div class="sec">Exportação</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -2963,7 +2820,6 @@ class Paginas:
     
     @staticmethod
     def auditoria():
-        """Página de log de auditoria."""
         st.markdown('<div class="sec">Log de Auditoria</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -3008,7 +2864,6 @@ class Paginas:
     
     @staticmethod
     def regras():
-        """Página de motor de regras."""
         st.markdown('<div class="sec">Motor de Regras Tributárias</div>', unsafe_allow_html=True)
         
         regras = st.session_state.get("regras") or GerenciadorRegras.carregar()
@@ -3093,7 +2948,6 @@ class Paginas:
     
     @staticmethod
     def importar_cte():
-        """Página de importação de CT-e."""
         st.markdown('<div class="sec">Importar XML CT-e → Bloco D (D100 · D101 · D105)</div>', unsafe_allow_html=True)
         
         ed = st.session_state.get("editor")
@@ -3239,7 +3093,6 @@ class Paginas:
         if st.button("▶ Inserir D100/D101/D105 no SPED", type="primary"):
             df_atual = ed.df
             
-            # Determinar número de linha inicial
             if "específico" in posicao:
                 nl_ini = int(nl_especifica)
             elif "último D100" in posicao:
@@ -3249,7 +3102,6 @@ class Paginas:
                 bloco_d = df_atual[df_atual["bloco"] == "D"]
                 nl_ini = int(bloco_d["numero_linha"].max()) + 1 if not bloco_d.empty else int(df_atual["numero_linha"].max()) + 1
             
-            # Garantir espaçamento
             nls_existentes = set(df_atual["numero_linha"].tolist())
             while nl_ini in nls_existentes or (nl_ini + 1) in nls_existentes or (nl_ini + 2) in nls_existentes:
                 nl_ini += 10
@@ -3286,7 +3138,6 @@ class Paginas:
                 
                 nl_cursor += 10
             
-            # Adicionar ao DataFrame
             df_novas = pd.DataFrame(novas_rows)
             for col in CAMPOS_NUMERICOS:
                 if col in df_novas.columns:
@@ -3295,10 +3146,8 @@ class Paginas:
             df_novo = pd.concat([ed.df, df_novas], ignore_index=True)
             df_novo = df_novo.sort_values("numero_linha").reset_index(drop=True)
             
-            # Atualizar estado
             ed._atual = df_novo
             
-            # Registrar auditoria
             for ln in novas_linhas:
                 ed.auditoria.registrar(
                     nl=ln.numero_linha,
@@ -3313,12 +3162,10 @@ class Paginas:
                     usuario=usuario,
                 )
             
-            # Atualizar linhas originais
             linhas_orig = st.session_state.get("linhas_orig", [])
             linhas_orig.extend(novas_linhas)
             st.session_state["linhas_orig"] = linhas_orig
             
-            # Revalidar
             regras = st.session_state.get("regras", [])
             if regras:
                 st.session_state["df_inc"] = ValidadorFiscal.validar(ed.df, regras, res.tipo_arquivo)
