@@ -78,11 +78,17 @@ COLUNA_STATUS_NOVO = "novo (importado)"
 CORES = {
     "primaria": "#0B3D2E",
     "secundaria": "#134E36",
+    "gradiente_1": "#0B3D2E",
+    "gradiente_2": "#1E7A4C",
+    "gradiente_3": "#C9A24B",
     "destaque": "#C9A24B",
     "fundo_card": "#F4F6F5",
+    "fundo_card_escuro": "#0F2E22",
     "erro": "#B3261E",
     "alerta": "#B7791F",
     "ok": "#1E7A4C",
+    "texto_claro": "#F4F6F5",
+    "texto_escuro": "#12241C",
 }
 
 
@@ -875,23 +881,288 @@ def inicializar_estado():
 
 
 def aplicar_estilo():
+    """Injeta CSS global: layout responsivo (grid fluido + breakpoints),
+    animações de entrada (fade/slide), microinterações em cards/botões/sidebar
+    e componentes visuais (hero, badges, cards de métrica, anel de progresso).
+    Tudo internamente ao mesmo arquivo, sem dependências externas de build
+    (apenas uma fonte via CDN, com fallback para fontes de sistema)."""
     st.markdown(f"""
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+        :root {{
+            --cor-primaria: {CORES['primaria']};
+            --cor-secundaria: {CORES['secundaria']};
+            --cor-grad-1: {CORES['gradiente_1']};
+            --cor-grad-2: {CORES['gradiente_2']};
+            --cor-grad-3: {CORES['gradiente_3']};
+            --cor-destaque: {CORES['destaque']};
+            --cor-card: {CORES['fundo_card']};
+            --cor-card-escuro: {CORES['fundo_card_escuro']};
+            --cor-erro: {CORES['erro']};
+            --cor-alerta: {CORES['alerta']};
+            --cor-ok: {CORES['ok']};
+            --sombra-suave: 0 2px 10px rgba(11,61,46,0.08);
+            --sombra-hover: 0 10px 24px rgba(11,61,46,0.18);
+            --raio: 12px;
+            --transicao: all .28s cubic-bezier(.4,0,.2,1);
+        }}
+
+        html, body, [class*="css"] {{
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }}
+
+        /* ---------- Animações-base ---------- */
+        @keyframes fadeInUp {{
+            0%   {{ opacity: 0; transform: translateY(14px); }}
+            100% {{ opacity: 1; transform: translateY(0); }}
+        }}
+        @keyframes fadeInLeft {{
+            0%   {{ opacity: 0; transform: translateX(-14px); }}
+            100% {{ opacity: 1; transform: translateX(0); }}
+        }}
+        @keyframes gradientFlow {{
+            0%   {{ background-position: 0% 50%; }}
+            50%  {{ background-position: 100% 50%; }}
+            100% {{ background-position: 0% 50%; }}
+        }}
+        @keyframes pulse {{
+            0%   {{ box-shadow: 0 0 0 0 rgba(179,38,30,0.45); }}
+            70%  {{ box-shadow: 0 0 0 10px rgba(179,38,30,0); }}
+            100% {{ box-shadow: 0 0 0 0 rgba(179,38,30,0); }}
+        }}
+        @keyframes shimmer {{
+            0%   {{ background-position: -400px 0; }}
+            100% {{ background-position: 400px 0; }}
+        }}
+        @keyframes spinRing {{
+            0%   {{ transform: rotate(0deg); }}
+            100% {{ transform: rotate(360deg); }}
+        }}
+
+        /* ---------- App / contêiner principal ---------- */
         .stApp {{ background-color: #FFFFFF; }}
-        .metric-card {{
-            background-color: {CORES['fundo_card']};
-            border-left: 4px solid {CORES['primaria']};
-            padding: 14px 16px; border-radius: 6px; margin-bottom: 8px;
+        [data-testid="stAppViewContainer"] .main .block-container {{
+            animation: fadeInUp .5s ease-out both;
+            padding-top: 1.4rem;
+            max-width: 1300px;
         }}
+
+        h1, h2, h3 {{
+            color: var(--cor-primaria);
+            animation: fadeInLeft .45s ease-out both;
+            font-weight: 700;
+        }}
+
+        /* ---------- Sidebar ---------- */
         section[data-testid="stSidebar"] {{
-            background-color: {CORES['primaria']};
+            background: linear-gradient(160deg, var(--cor-grad-1), var(--cor-grad-2) 70%);
+            background-size: 200% 200%;
+            animation: gradientFlow 14s ease infinite;
         }}
-        section[data-testid="stSidebar"] * {{ color: #F4F6F5 !important; }}
-        h1, h2, h3 {{ color: {CORES['primaria']}; }}
-        .badge-critica {{ background:{CORES['erro']}; color:white; padding:2px 8px; border-radius:10px; font-size:0.75em; }}
-        .badge-atencao {{ background:{CORES['alerta']}; color:white; padding:2px 8px; border-radius:10px; font-size:0.75em; }}
-        .badge-ok {{ background:{CORES['ok']}; color:white; padding:2px 8px; border-radius:10px; font-size:0.75em; }}
+        section[data-testid="stSidebar"] * {{ color: var(--cor-card) !important; }}
+        section[data-testid="stSidebar"] label {{
+            transition: var(--transicao);
+            border-radius: 8px;
+            padding: 2px 6px;
+        }}
+        section[data-testid="stSidebar"] label:hover {{
+            background: rgba(244,246,245,0.12);
+            transform: translateX(4px);
+        }}
+        section[data-testid="stSidebar"] hr {{ border-color: rgba(244,246,245,0.25); }}
+
+        /* ---------- Botões ---------- */
+        .stButton > button, .stDownloadButton > button {{
+            border-radius: 8px !important;
+            border: none !important;
+            transition: var(--transicao) !important;
+            box-shadow: var(--sombra-suave);
+        }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{
+            transform: translateY(-2px);
+            box-shadow: var(--sombra-hover);
+        }}
+        .stButton > button:active, .stDownloadButton > button:active {{
+            transform: translateY(0px) scale(.98);
+        }}
+
+        /* ---------- Tabelas / data editor ---------- */
+        [data-testid="stDataFrame"], [data-testid="stDataEditor"] {{
+            border-radius: var(--raio);
+            overflow: hidden;
+            box-shadow: var(--sombra-suave);
+            animation: fadeInUp .5s ease-out both;
+        }}
+
+        /* ---------- Hero / cabeçalho de página ---------- */
+        .ss-hero {{
+            border-radius: 16px;
+            padding: 26px 28px;
+            margin-bottom: 22px;
+            color: var(--cor-card);
+            background: linear-gradient(120deg, var(--cor-grad-1), var(--cor-grad-2), var(--cor-grad-3));
+            background-size: 220% 220%;
+            animation: gradientFlow 10s ease infinite, fadeInUp .5s ease-out both;
+            box-shadow: var(--sombra-hover);
+            position: relative;
+            overflow: hidden;
+        }}
+        .ss-hero::after {{
+            content: "";
+            position: absolute; inset: 0;
+            background: radial-gradient(circle at 85% 20%, rgba(255,255,255,0.16), transparent 55%);
+        }}
+        .ss-hero h1 {{
+            color: #FFFFFF !important; margin: 0 0 4px 0; font-size: 1.65rem;
+            animation: none;
+        }}
+        .ss-hero p {{ margin: 0; opacity: .92; font-size: .95rem; }}
+
+        /* ---------- Grid responsivo de métricas ---------- */
+        .ss-metric-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+            gap: 14px;
+            margin-bottom: 20px;
+        }}
+        .ss-metric-card {{
+            background: var(--cor-card);
+            border-left: 4px solid var(--cor-primaria);
+            border-radius: var(--raio);
+            padding: 16px 18px;
+            box-shadow: var(--sombra-suave);
+            transition: var(--transicao);
+            animation: fadeInUp .55s ease-out both;
+        }}
+        .ss-metric-card:hover {{
+            transform: translateY(-4px);
+            box-shadow: var(--sombra-hover);
+            border-left-color: var(--cor-destaque);
+        }}
+        .ss-metric-card .rotulo {{
+            font-size: .78rem; text-transform: uppercase; letter-spacing: .05em;
+            color: #4A5A52; font-weight: 600;
+        }}
+        .ss-metric-card .valor {{
+            font-size: 1.9rem; font-weight: 800; color: var(--cor-primaria);
+            line-height: 1.15; margin-top: 4px;
+        }}
+        .ss-metric-card .legenda {{ font-size: .78rem; color: #6B7A73; margin-top: 2px; }}
+        .ss-metric-card.critico {{ border-left-color: var(--cor-erro); }}
+        .ss-metric-card.critico .valor {{ color: var(--cor-erro); }}
+        .ss-metric-card.alerta {{ border-left-color: var(--cor-alerta); }}
+        .ss-metric-card.alerta .valor {{ color: var(--cor-alerta); }}
+        .ss-metric-card.ok {{ border-left-color: var(--cor-ok); }}
+        .ss-metric-card.ok .valor {{ color: var(--cor-ok); }}
+
+        /* ---------- Badges animados ---------- */
+        .badge-critica {{
+            background: var(--cor-erro); color: white; padding: 3px 10px;
+            border-radius: 12px; font-size: .74em; font-weight: 600;
+            display: inline-block; animation: pulse 2.2s infinite;
+        }}
+        .badge-atencao {{
+            background: var(--cor-alerta); color: white; padding: 3px 10px;
+            border-radius: 12px; font-size: .74em; font-weight: 600; display: inline-block;
+        }}
+        .badge-ok {{
+            background: var(--cor-ok); color: white; padding: 3px 10px;
+            border-radius: 12px; font-size: .74em; font-weight: 600; display: inline-block;
+        }}
+
+        /* ---------- Anel de progresso (índice de saúde fiscal) ---------- */
+        .ss-ring-wrap {{ display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }}
+        .ss-ring {{
+            width: 108px; height: 108px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            background: conic-gradient(var(--cor-ok) calc(var(--pct) * 1%), #E7EBE9 0);
+            animation: fadeInUp .6s ease-out both;
+            position: relative;
+        }}
+        .ss-ring::before {{
+            content: ""; position: absolute; width: 82px; height: 82px;
+            border-radius: 50%; background: #FFFFFF; box-shadow: inset 0 0 0 1px #ECEFED;
+        }}
+        .ss-ring span {{
+            position: relative; z-index: 1; font-weight: 800; font-size: 1.15rem;
+            color: var(--cor-primaria);
+        }}
+
+        /* ---------- Barra de carregamento shimmer (placeholder decorativo) ---------- */
+        .ss-shimmer {{
+            height: 6px; border-radius: 4px; margin: 6px 0 16px 0;
+            background: linear-gradient(90deg, #E7EBE9 4%, #F4F6F5 25%, #E7EBE9 36%);
+            background-size: 800px 100%; animation: shimmer 1.6s infinite linear;
+        }}
+
+        /* ---------- Responsividade ---------- */
+        @media (max-width: 900px) {{
+            .ss-hero {{ padding: 18px 18px; }}
+            .ss-hero h1 {{ font-size: 1.3rem; }}
+            .ss-metric-grid {{ grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }}
+            .ss-metric-card .valor {{ font-size: 1.5rem; }}
+        }}
+        @media (max-width: 600px) {{
+            .ss-metric-grid {{ grid-template-columns: 1fr 1fr; }}
+            .ss-ring {{ width: 84px; height: 84px; }}
+            .ss-ring::before {{ width: 62px; height: 62px; }}
+        }}
     </style>
+    """, unsafe_allow_html=True)
+
+
+def render_hero(titulo: str, subtitulo: str = "", emoji: str = "🧾"):
+    """Cabeçalho animado (gradiente em movimento) usado no topo das páginas."""
+    st.markdown(f"""
+    <div class="ss-hero">
+        <h1>{emoji} {titulo}</h1>
+        {f'<p>{subtitulo}</p>' if subtitulo else ''}
+    </div>
+    """, unsafe_allow_html=True)
+
+
+def render_metric_cards(itens: list[dict]):
+    """Renderiza um grid responsivo de cards de métrica animados.
+    Cada item: {"rotulo": str, "valor": str, "legenda": str (opcional),
+    "estado": "neutro"|"critico"|"alerta"|"ok" (opcional)}."""
+    cards_html = ""
+    for i, item in enumerate(itens):
+        estado = item.get("estado", "neutro")
+        classe_estado = "" if estado == "neutro" else estado
+        atraso = f"style='animation-delay:{i * 0.06:.2f}s'"
+        legenda = f'<div class="legenda">{item["legenda"]}</div>' if item.get("legenda") else ""
+        cards_html += f"""
+        <div class="ss-metric-card {classe_estado}" {atraso}>
+            <div class="rotulo">{item['rotulo']}</div>
+            <div class="valor">{item['valor']}</div>
+            {legenda}
+        </div>
+        """
+    st.markdown(f'<div class="ss-metric-grid">{cards_html}</div>', unsafe_allow_html=True)
+
+
+def badge_html(texto: str, severidade: str) -> str:
+    """Retorna o HTML de um badge animado. severidade: 'Crítica'|'Atenção'|'ok'."""
+    classe = {"Crítica": "badge-critica", "Atenção": "badge-atencao"}.get(severidade, "badge-ok")
+    return f'<span class="{classe}">{texto}</span>'
+
+
+def render_progress_ring(percentual: float, rotulo: str = "Índice de Saúde Fiscal"):
+    """Anel de progresso em CSS puro (conic-gradient), com animação de entrada."""
+    percentual = max(0, min(100, percentual))
+    st.markdown(f"""
+    <div class="ss-ring-wrap">
+        <div class="ss-ring" style="--pct:{percentual:.0f}">
+            <span>{percentual:.0f}%</span>
+        </div>
+        <div>
+            <div style="font-weight:700; color:var(--cor-primaria); font-size:1.02rem;">{rotulo}</div>
+            <div style="color:#6B7A73; font-size:.85rem; max-width:320px;">
+                Proporção de itens sem inconsistência crítica em relação ao total de itens analisados.
+            </div>
+        </div>
+    </div>
     """, unsafe_allow_html=True)
 
 
@@ -910,7 +1181,7 @@ def carregar_arquivo(conteudo_texto: str):
 # ---------- Páginas ----------
 
 def pagina_upload():
-    st.header("📤 Upload do Arquivo SPED")
+    render_hero("Upload do Arquivo SPED", "Envie um arquivo EFD ICMS/IPI ou EFD Contribuições (.txt) para iniciar a auditoria.", "📤")
     st.write("Envie um arquivo SPED (.txt) da **EFD ICMS/IPI** ou da **EFD Contribuições**.")
     up = st.file_uploader("Arquivo SPED", type=["txt"])
     if up is not None:
@@ -936,22 +1207,38 @@ def pagina_upload():
 
 
 def pagina_dashboard():
-    st.header("📊 Dashboard")
     if not st.session_state.arquivo_carregado:
-        st.info("Faça upload de um arquivo SPED na aba **Upload do Arquivo** para começar.")
+        render_hero("Dashboard", "Faça upload de um arquivo SPED para liberar os indicadores.", "📊")
+        st.info("Vá até **Upload do Arquivo** para começar.")
         return
+
+    info = st.session_state.info_empresa
+    render_hero(
+        "Dashboard de Auditoria Fiscal",
+        f"{info.get('razao_social','')} · CNPJ {info.get('cnpj','—')} · "
+        f"Período {info.get('dt_ini','—')} a {info.get('dt_fin','—')} · "
+        f"Layout: {st.session_state.tipo_arquivo}",
+        "📊",
+    )
 
     df = st.session_state.registros_df
     tipo = st.session_state.tipo_arquivo
     reg_item = REGISTRO_ITEM_POR_TIPO.get(tipo, "C170")
     df_itens = dataframe_detalhado(st.session_state.registros, reg_item)
     inconsistencias = detectar_inconsistencias(df_itens, st.session_state.regras_tributarias, tipo)
+    n_criticas = len(inconsistencias[inconsistencias["severidade"] == "Crítica"]) if not inconsistencias.empty else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total de registros", len(df))
-    c2.metric("Blocos distintos", df["bloco"].nunique() if not df.empty else 0)
-    c3.metric("Itens (C170)", len(df_itens))
-    c4.metric("Inconsistências", len(inconsistencias))
+    render_metric_cards([
+        {"rotulo": "Total de registros", "valor": f"{len(df):,}".replace(",", "."), "estado": "neutro"},
+        {"rotulo": "Blocos distintos", "valor": str(df["bloco"].nunique() if not df.empty else 0), "estado": "neutro"},
+        {"rotulo": "Itens analisados", "valor": str(len(df_itens)), "estado": "neutro"},
+        {"rotulo": "Inconsistências", "valor": str(len(inconsistencias)),
+         "legenda": f"{n_criticas} crítica(s)", "estado": "critico" if n_criticas else "ok"},
+    ])
+
+    total_itens = len(df_itens) if len(df_itens) else 1
+    pct_saude = 100 - (n_criticas / total_itens * 100)
+    render_progress_ring(pct_saude)
 
     st.markdown("#### Registros por bloco")
     if not df.empty:
@@ -970,15 +1257,19 @@ def pagina_dashboard():
         st.bar_chart(cont_trib.set_index("tributo"))
 
         st.markdown("#### Resumo de inconsistências críticas")
-        criticas = inconsistencias[inconsistencias["severidade"] == "Crítica"]
-        st.write(f"**{len(criticas)}** inconsistência(s) crítica(s) — exigem base, alíquota e imposto "
-                 "simultaneamente, conforme regra tributária aplicável.")
+        st.markdown(
+            f"{badge_html(f'{n_criticas} crítica(s)', 'Crítica')} "
+            f"{badge_html(f'{len(inconsistencias) - n_criticas} em atenção', 'Atenção')} "
+            "— críticas exigem base, alíquota e imposto simultaneamente, "
+            "conforme regra tributária aplicável.",
+            unsafe_allow_html=True,
+        )
     else:
         st.success("Nenhuma inconsistência crítica detectada com as regras atuais.")
 
 
 def pagina_blocos():
-    st.header("🧱 Visão por Blocos")
+    render_hero("Visão por Blocos", "Navegue pela estrutura hierárquica do arquivo SPED.", "🧱")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -993,7 +1284,7 @@ def pagina_blocos():
 
 
 def pagina_registros():
-    st.header("📋 Visão por Registros")
+    render_hero("Visão por Registros", "Detalhe qualquer tipo de registro com leiaute nomeado ou genérico.", "📋")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -1009,7 +1300,7 @@ def pagina_registros():
 
 
 def pagina_notas_fiscais():
-    st.header("🧾 Visão por Notas Fiscais / Documentos")
+    render_hero("Notas Fiscais / Documentos", "Documentos de mercadorias (C100) e de transporte / CT-e (D100).", "🧾")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -1029,7 +1320,7 @@ def pagina_notas_fiscais():
 
 
 def pagina_itens():
-    st.header("📦 Visão por Itens (C170)")
+    render_hero("Visão por Itens (C170)", "Itens de documentos fiscais, filtráveis por CFOP.", "📦")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -1046,7 +1337,7 @@ def pagina_itens():
 
 
 def pagina_inconsistencias():
-    st.header("🚨 Inconsistências Fiscais")
+    render_hero("Inconsistências Fiscais", "Achados do motor de regras tributárias, por tributo e severidade.", "🚨")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -1065,14 +1356,22 @@ def pagina_inconsistencias():
     filtrado = inconsistencias[
         inconsistencias["tributo"].isin(tributo_sel) & inconsistencias["severidade"].isin(severidade_sel)
     ]
-    st.write(f"**{len(filtrado)}** ocorrência(s) encontradas.")
+
+    n_crit = len(filtrado[filtrado["severidade"] == "Crítica"])
+    n_atn = len(filtrado[filtrado["severidade"] == "Atenção"])
+    st.markdown(
+        f"**{len(filtrado)}** ocorrência(s) encontradas &nbsp; "
+        f"{badge_html(f'{n_crit} crítica(s)', 'Crítica')} &nbsp; "
+        f"{badge_html(f'{n_atn} em atenção', 'Atenção')}",
+        unsafe_allow_html=True,
+    )
     st.dataframe(filtrado.drop(columns=["campo_base", "campo_aliq", "campo_imp"]),
                  use_container_width=True, hide_index=True)
     st.session_state["_ultima_lista_inconsistencias"] = filtrado
 
 
 def pagina_correcoes_massa():
-    st.header("🛠️ Correções em Massa")
+    render_hero("Correções em Massa", "Filtre, revise a prévia e aplique correções a múltiplos itens de uma vez.", "🛠️")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -1134,7 +1433,7 @@ def pagina_correcoes_massa():
 
 
 def pagina_editor_manual():
-    st.header("✏️ Editor Manual Avançado")
+    render_hero("Editor Manual Avançado", "Edição assistida com trilha de auditoria e restauração de valores originais.", "✏️")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -1175,7 +1474,7 @@ def pagina_editor_manual():
 
 
 def pagina_regras():
-    st.header("⚙️ Motor de Regras Tributárias")
+    render_hero("Motor de Regras Tributárias", "Cadastre e ajuste as regras que orientam a detecção de inconsistências.", "⚙️")
     st.caption("Cadastre, edite e ative/desative regras por CST + prefixo de CFOP + tributo. "
                "A fórmula do motor é sempre: imposto = base × alíquota / 100.")
     df_regras = st.data_editor(
@@ -1195,7 +1494,7 @@ def pagina_regras():
 
 
 def pagina_importar_cte():
-    st.header("🚚 Importar CT-e (XML) para o Bloco D")
+    render_hero("Importar CT-e (XML) para o Bloco D", "Exclusivo para EFD Contribuições — gera D100/D101/D105 automaticamente.", "🚚")
     st.caption("Disponível **somente para EFD Contribuições** — gera os registros "
                "D100 (documento), D101 (crédito PIS) e D105 (crédito COFINS) a partir "
                "do XML do CT-e, com valores sujeitos a revisão manual antes da exportação.")
@@ -1247,7 +1546,7 @@ def pagina_importar_cte():
 
 
 def pagina_exportacao():
-    st.header("📦 Exportação")
+    render_hero("Exportação", "Gere o SPED corrigido, o relatório Excel e o CSV de inconsistências.", "📦")
     if not st.session_state.arquivo_carregado:
         st.info("Nenhum arquivo carregado.")
         return
@@ -1285,7 +1584,7 @@ def pagina_exportacao():
 
 
 def pagina_auditoria():
-    st.header("🕵️ Log de Auditoria")
+    render_hero("Log de Auditoria", "Trilha completa de quem alterou o quê, quando e por quê.", "🕵️")
     if not st.session_state.audit_log:
         st.info("Nenhuma alteração registrada nesta sessão.")
         return
@@ -1323,8 +1622,14 @@ def main():
     with st.sidebar:
         st.markdown(f"## {APP_ICON} SPED Studio")
         if st.session_state.arquivo_carregado:
-            st.caption(f"Tipo: **{st.session_state.tipo_arquivo}**")
+            st.markdown(
+                f'{badge_html(st.session_state.tipo_arquivo, "ok")}',
+                unsafe_allow_html=True,
+            )
             st.caption(st.session_state.info_empresa.get("razao_social", ""))
+        else:
+            st.markdown(f'{badge_html("Aguardando upload", "Atenção")}', unsafe_allow_html=True)
+        st.markdown("<hr>", unsafe_allow_html=True)
         pagina_sel = st.radio("Navegação", list(PAGINAS.keys()), label_visibility="collapsed")
 
     PAGINAS[pagina_sel]()
